@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/project_compile_policy.cmake)
 
 set(REQUIRED_IDF_VERSION "6.1.1")
 set(ACTUAL_IDF_VERSION
