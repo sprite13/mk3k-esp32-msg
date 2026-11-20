@@ -1,0 +1,7 @@
+menu "Wi-Fi"
+
+    config ESP_WIFI_ENABLED
+        bool "Enable Wi-Fi"
+        default n
+
+endmenu
