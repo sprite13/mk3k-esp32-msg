@@ -21,3 +21,12 @@ add_executable(test_notification_normalizer test_notification_normalizer.c)
 target_link_libraries(test_notification_normalizer PRIVATE notification_core)
 project_apply_compile_policy(test_notification_normalizer)
 add_test(NAME notification_normalizer COMMAND test_notification_normalizer)
+
+set(BOARD_DIR ${CMAKE_CURRENT_LIST_DIR}/../../components/board_m5stickc_plus2)
+add_executable(test_board_logic
+    test_board_logic.c
+    ${BOARD_DIR}/board_logic.c
+)
+target_include_directories(test_board_logic PRIVATE ${BOARD_DIR})
+project_apply_compile_policy(test_board_logic)
+add_test(NAME board_logic COMMAND test_board_logic)
