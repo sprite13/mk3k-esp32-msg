@@ -95,6 +95,25 @@ static bool should_remove(uint32_t code_point)
            code_point == 0x200DU;
 }
 
+static bool is_supported_character(uint32_t code_point)
+{
+    const bool ascii_printable =
+        code_point >= 0x0021U && code_point <= 0x007EU;
+    const bool cyrillic = code_point >= 0x0400U && code_point <= 0x04FFU;
+    // Notification previews commonly use guillemets, smart quotes, dashes,
+    // bullets, and ellipses in addition to the display's text glyphs.
+    const bool guillemet = code_point == 0x00ABU || code_point == 0x00BBU ||
+                           code_point == 0x2039U || code_point == 0x203AU;
+    const bool dash = code_point >= 0x2010U && code_point <= 0x2015U;
+    const bool quotation_mark =
+        code_point >= 0x2018U && code_point <= 0x201FU;
+    const bool common_notification_punctuation =
+        code_point == 0x2022U || code_point == 0x2026U;
+
+    return ascii_printable || cyrillic || guillemet || dash ||
+           quotation_mark || common_notification_punctuation;
+}
+
 static void normalize_field(char *field, size_t capacity)
 {
     size_t read_index = 0U;
@@ -115,6 +134,9 @@ static void normalize_field(char *field, size_t capacity)
             continue;
         }
         if (should_remove(character.code_point)) {
+            continue;
+        }
+        if (!is_supported_character(character.code_point)) {
             continue;
         }
 
@@ -141,9 +163,8 @@ bool notification_is_telegram(const notification_t *item)
         return false;
     }
 
-    const size_t bundle_length = sizeof(TELEGRAM_IOS_BUNDLE_ID) - 1U;
-    return memcmp(item->app_id, TELEGRAM_IOS_BUNDLE_ID, bundle_length) == 0 &&
-           item->app_id[bundle_length] == '\0';
+    return memcmp(item->app_id, TELEGRAM_IOS_BUNDLE_ID,
+                  sizeof(TELEGRAM_IOS_BUNDLE_ID)) == 0;
 }
 
 void notification_normalize(notification_t *item)
@@ -152,6 +173,7 @@ void notification_normalize(notification_t *item)
         return;
     }
 
+    item->app_id[sizeof(item->app_id) - 1U] = '\0';
     normalize_field(item->title, sizeof(item->title));
     normalize_field(item->subtitle, sizeof(item->subtitle));
     normalize_field(item->message, sizeof(item->message));
