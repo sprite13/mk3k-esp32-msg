@@ -33,16 +33,30 @@ void display_lifecycle_mark_awake(display_lifecycle_t *lifecycle)
     }
 }
 
-void display_lifecycle_mark_sleeping(display_lifecycle_t *lifecycle)
-{
-    if (lifecycle != NULL && lifecycle->state != DISPLAY_LIFECYCLE_FAILED) {
-        lifecycle->state = DISPLAY_LIFECYCLE_SLEEPING;
-    }
-}
-
 void display_lifecycle_mark_transfer_timeout(display_lifecycle_t *lifecycle)
 {
     if (lifecycle != NULL) {
         lifecycle->state = DISPLAY_LIFECYCLE_FAILED;
+    }
+}
+
+void display_lifecycle_resolve_sleep(display_lifecycle_t *lifecycle,
+                                     display_sleep_result_t result)
+{
+    if (lifecycle == NULL || lifecycle->state == DISPLAY_LIFECYCLE_FAILED) {
+        return;
+    }
+
+    switch (result) {
+    case DISPLAY_SLEEP_COMPLETED:
+        lifecycle->state = DISPLAY_LIFECYCLE_SLEEPING;
+        break;
+    case DISPLAY_SLEEP_RECOVERED:
+        lifecycle->state = DISPLAY_LIFECYCLE_AWAKE;
+        break;
+    case DISPLAY_SLEEP_FAILED:
+    default:
+        lifecycle->state = DISPLAY_LIFECYCLE_FAILED;
+        break;
     }
 }

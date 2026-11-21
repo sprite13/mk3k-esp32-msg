@@ -285,6 +285,18 @@ void display_ui_render(const display_ui_model_t *model)
     xSemaphoreGive(s_operation_mutex);
 }
 
+static bool recover_awake_panel(void)
+{
+    const esp_err_t wake_err = esp_lcd_panel_disp_sleep(s_panel, false);
+    const esp_err_t display_on_err = esp_lcd_panel_disp_on_off(s_panel, true);
+    if (wake_err != ESP_OK || display_on_err != ESP_OK) {
+        ESP_LOGE(TAG, "panel recovery failed: wake=%s display-on=%s",
+                 esp_err_to_name(wake_err), esp_err_to_name(display_on_err));
+        return false;
+    }
+    return true;
+}
+
 void display_ui_sleep(void)
 {
     if (!s_initialized ||
@@ -295,14 +307,29 @@ void display_ui_sleep(void)
         xSemaphoreGive(s_operation_mutex);
         return;
     }
-    esp_err_t err = esp_lcd_panel_disp_on_off(s_panel, false);
-    if (err == ESP_OK) {
-        err = esp_lcd_panel_disp_sleep(s_panel, true);
+    const esp_err_t display_off_err = esp_lcd_panel_disp_on_off(s_panel, false);
+    if (display_off_err != ESP_OK) {
+        const bool recovered = recover_awake_panel();
+        display_lifecycle_resolve_sleep(
+            &s_lifecycle,
+            recovered ? DISPLAY_SLEEP_RECOVERED : DISPLAY_SLEEP_FAILED);
+        ESP_LOGE(TAG, "failed to turn display off: %s",
+                 esp_err_to_name(display_off_err));
+        xSemaphoreGive(s_operation_mutex);
+        return;
     }
-    if (err == ESP_OK) {
-        display_lifecycle_mark_sleeping(&s_lifecycle);
-    } else {
-        ESP_LOGE(TAG, "failed to sleep panel: %s", esp_err_to_name(err));
+
+    const esp_err_t sleep_err = esp_lcd_panel_disp_sleep(s_panel, true);
+    if (sleep_err == ESP_OK) {
+        display_lifecycle_resolve_sleep(&s_lifecycle, DISPLAY_SLEEP_COMPLETED);
+        xSemaphoreGive(s_operation_mutex);
+        return;
     }
+
+    const bool recovered = recover_awake_panel();
+    display_lifecycle_resolve_sleep(
+        &s_lifecycle, recovered ? DISPLAY_SLEEP_RECOVERED : DISPLAY_SLEEP_FAILED);
+    ESP_LOGE(TAG, "failed to sleep panel: %s; recovery %s",
+             esp_err_to_name(sleep_err), recovered ? "succeeded" : "failed");
     xSemaphoreGive(s_operation_mutex);
 }
