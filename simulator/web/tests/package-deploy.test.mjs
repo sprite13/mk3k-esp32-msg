@@ -116,6 +116,11 @@ test('package validation rejects source maps, symlinks and absolute-root URLs', 
     result = run(packageScript, ['--check', fixture]);
     assert.notEqual(result.status, 0);
 
+    writeFileSync(join(fixture, 'index.html'), originalHtml.replace('./styles/main.css', '//evil.example'));
+    rewriteManifest(fixture);
+    result = run(packageScript, ['--check', fixture]);
+    assert.notEqual(result.status, 0);
+
     writeFileSync(join(fixture, 'index.html'), originalHtml.replace('./styles/main.css', '/styles/main.css'));
     rewriteManifest(fixture);
     result = run(packageScript, ['--check', fixture]);

@@ -62,7 +62,7 @@ validate_package() {
         die "package contains a remote HTTP resource"
     fi
     if grep -RInE --include='*.html' --include='*.css' --include='*.mjs' \
-        '//[A-Za-z0-9][A-Za-z0-9.-]*[/:]' "$package_dir" >/dev/null; then
+        "//[A-Za-z0-9][A-Za-z0-9.-]*([/:]|[\"'\`<>[:space:]]|\$)" "$package_dir" >/dev/null; then
         die "package contains a protocol-relative remote resource"
     fi
     while IFS= read -r directory; do
