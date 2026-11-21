@@ -35,3 +35,30 @@ uint32_t board_bound_beep_duration_ms(uint32_t duration_ms)
     }
     return duration_ms;
 }
+
+void board_buzzer_start(board_buzzer_state_t *state, uint64_t now_us,
+                        uint32_t duration_ms)
+{
+    const uint64_t duration_us =
+        (uint64_t)board_bound_beep_duration_ms(duration_ms) * 1000U;
+    state->active = duration_us > 0U;
+    state->deadline_us = now_us + duration_us;
+}
+
+bool board_buzzer_expire(board_buzzer_state_t *state, uint64_t now_us)
+{
+    if (!state->active || now_us < state->deadline_us) {
+        return false;
+    }
+
+    state->active = false;
+    return true;
+}
+
+uint64_t board_buzzer_remaining_us(const board_buzzer_state_t *state, uint64_t now_us)
+{
+    if (!state->active || now_us >= state->deadline_us) {
+        return 0U;
+    }
+    return state->deadline_us - now_us;
+}

@@ -11,6 +11,9 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 
 _Static_assert((int)BOARD_LCD_SCLK == (int)GPIO_NUM_13, "LCD SCLK pin changed");
 _Static_assert((int)BOARD_LCD_MOSI == (int)GPIO_NUM_15, "LCD MOSI pin changed");
@@ -28,6 +31,8 @@ _Static_assert((int)BOARD_BATTERY_ADC == (int)GPIO_NUM_38, "battery ADC pin chan
 #define BOARD_BUTTON_MASK ((1ULL << BOARD_BUTTON_A) | (1ULL << BOARD_BUTTON_B) | \
                            (1ULL << BOARD_BUTTON_POWER))
 #define BOARD_BUZZER_DUTY 512U
+#define BOARD_BUZZER_TASK_STACK_SIZE 3072U
+#define BOARD_BUZZER_TASK_PRIORITY 5U
 #define BOARD_BATTERY_DIVIDER_NUMERATOR 2U
 
 static const char *const TAG = "board";
@@ -35,8 +40,13 @@ static const ledc_mode_t BUZZER_SPEED_MODE = LEDC_LOW_SPEED_MODE;
 static const ledc_timer_t BUZZER_TIMER = LEDC_TIMER_0;
 static const ledc_channel_t BUZZER_CHANNEL = LEDC_CHANNEL_0;
 
+typedef struct {
+    uint32_t frequency_hz;
+    uint32_t duration_ms;
+} buzzer_command_t;
+
 static bool s_initialized;
-static esp_timer_handle_t s_buzzer_stop_timer;
+static QueueHandle_t s_buzzer_queue;
 static adc_oneshot_unit_handle_t s_adc_handle;
 static adc_cali_handle_t s_adc_cali_handle;
 static board_debounce_state_t s_button_a;
@@ -59,10 +69,59 @@ static void buzzer_silence(void)
     }
 }
 
-static void buzzer_stop_callback(void *arg)
+static TickType_t buzzer_wait_ticks(uint64_t remaining_us)
+{
+    const uint64_t remaining_ms = (remaining_us + 999U) / 1000U;
+    TickType_t ticks = pdMS_TO_TICKS((uint32_t)remaining_ms);
+    if (ticks == 0U) {
+        ticks = 1U;
+    }
+    return ticks;
+}
+
+static esp_err_t buzzer_start_output(uint32_t frequency_hz)
+{
+    esp_err_t err = ledc_set_freq(BUZZER_SPEED_MODE, BUZZER_TIMER, frequency_hz);
+    if (err == ESP_OK) {
+        err = ledc_set_duty(BUZZER_SPEED_MODE, BUZZER_CHANNEL, BOARD_BUZZER_DUTY);
+    }
+    if (err == ESP_OK) {
+        err = ledc_update_duty(BUZZER_SPEED_MODE, BUZZER_CHANNEL);
+    }
+    return err;
+}
+
+static void buzzer_task(void *arg)
 {
     (void)arg;
-    buzzer_silence();
+    board_buzzer_state_t state = {0};
+    TickType_t wait_ticks = portMAX_DELAY;
+
+    while (true) {
+        buzzer_command_t command;
+        if (xQueueReceive(s_buzzer_queue, &command, wait_ticks) == pdTRUE) {
+            if (command.frequency_hz == 0U || command.duration_ms == 0U) {
+                state.active = false;
+                buzzer_silence();
+            } else {
+                const esp_err_t err = buzzer_start_output(command.frequency_hz);
+                if (err == ESP_OK) {
+                    board_buzzer_start(&state, (uint64_t)esp_timer_get_time(),
+                                       command.duration_ms);
+                } else {
+                    state.active = false;
+                    buzzer_silence();
+                    ESP_LOGE(TAG, "failed to start beep: %s", esp_err_to_name(err));
+                }
+            }
+        } else if (board_buzzer_expire(&state, (uint64_t)esp_timer_get_time())) {
+            buzzer_silence();
+        }
+
+        const uint64_t remaining_us =
+            board_buzzer_remaining_us(&state, (uint64_t)esp_timer_get_time());
+        wait_ticks = remaining_us > 0U ? buzzer_wait_ticks(remaining_us) : portMAX_DELAY;
+    }
 }
 
 static void buzzer_init(void)
@@ -87,11 +146,12 @@ static void buzzer_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&channel_config));
 
-    const esp_timer_create_args_t stop_timer_args = {
-        .callback = buzzer_stop_callback,
-        .name = "buzzer_stop",
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&stop_timer_args, &s_buzzer_stop_timer));
+    s_buzzer_queue = xQueueCreate(1U, sizeof(buzzer_command_t));
+    ESP_ERROR_CHECK(s_buzzer_queue != NULL ? ESP_OK : ESP_ERR_NO_MEM);
+    const BaseType_t task_created =
+        xTaskCreate(buzzer_task, "board_buzzer", BOARD_BUZZER_TASK_STACK_SIZE, NULL,
+                    BOARD_BUZZER_TASK_PRIORITY, NULL);
+    ESP_ERROR_CHECK(task_created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
 static void adc_init(void)
@@ -187,39 +247,17 @@ void board_backlight_set(bool enabled)
 
 void board_beep(uint32_t frequency_hz, uint32_t duration_ms)
 {
-    if (!s_initialized || s_buzzer_stop_timer == NULL) {
+    if (!s_initialized || s_buzzer_queue == NULL) {
         ESP_LOGE(TAG, "cannot beep before board_init");
         return;
     }
 
-    if (esp_timer_is_active(s_buzzer_stop_timer)) {
-        const esp_err_t stop_err = esp_timer_stop(s_buzzer_stop_timer);
-        if (stop_err != ESP_OK) {
-            ESP_LOGW(TAG, "failed to stop previous beep timer: %s",
-                     esp_err_to_name(stop_err));
-        }
-    }
-
-    const uint32_t bounded_duration_ms = board_bound_beep_duration_ms(duration_ms);
-    if (frequency_hz == 0U || bounded_duration_ms == 0U) {
-        buzzer_silence();
-        return;
-    }
-
-    esp_err_t err = ledc_set_freq(BUZZER_SPEED_MODE, BUZZER_TIMER, frequency_hz);
-    if (err == ESP_OK) {
-        err = ledc_set_duty(BUZZER_SPEED_MODE, BUZZER_CHANNEL, BOARD_BUZZER_DUTY);
-    }
-    if (err == ESP_OK) {
-        err = ledc_update_duty(BUZZER_SPEED_MODE, BUZZER_CHANNEL);
-    }
-    if (err == ESP_OK) {
-        const uint64_t duration_us = (uint64_t)bounded_duration_ms * 1000U;
-        err = esp_timer_start_once(s_buzzer_stop_timer, duration_us);
-    }
-    if (err != ESP_OK) {
-        buzzer_silence();
-        ESP_LOGE(TAG, "failed to start beep: %s", esp_err_to_name(err));
+    const buzzer_command_t command = {
+        .frequency_hz = frequency_hz,
+        .duration_ms = board_bound_beep_duration_ms(duration_ms),
+    };
+    if (xQueueOverwrite(s_buzzer_queue, &command) != pdPASS) {
+        ESP_LOGE(TAG, "failed to queue beep command");
     }
 }
 

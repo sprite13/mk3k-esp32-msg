@@ -1,17 +1,17 @@
-#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
 
 #include "notification_normalizer.h"
+#include "test_check.h"
 
 static void assert_repeated_prefix(const char *value, char expected,
                                    size_t count)
 {
     for (size_t index = 0; index < count; ++index) {
-        assert(value[index] == expected);
+        TEST_CHECK(value[index] == expected);
     }
-    assert(value[count] == '\0');
+    TEST_CHECK(value[count] == '\0');
 }
 
 static void test_exact_telegram_bundle_id(void)
@@ -20,19 +20,19 @@ static void test_exact_telegram_bundle_id(void)
     const size_t bundle_length = strlen(TELEGRAM_IOS_BUNDLE_ID);
 
     strcpy(item.app_id, TELEGRAM_IOS_BUNDLE_ID);
-    assert(notification_is_telegram(&item));
+    TEST_CHECK(notification_is_telegram(&item));
 
     strcpy(item.app_id, "ph.telegra.Telegraph.beta");
-    assert(!notification_is_telegram(&item));
+    TEST_CHECK(!notification_is_telegram(&item));
 
     strcpy(item.app_id, "ph.telegra.Telegrap");
-    assert(!notification_is_telegram(&item));
+    TEST_CHECK(!notification_is_telegram(&item));
 
     memset(item.app_id, 'x', sizeof(item.app_id));
-    assert(!notification_is_telegram(&item));
+    TEST_CHECK(!notification_is_telegram(&item));
 
     memcpy(item.app_id, TELEGRAM_IOS_BUNDLE_ID, bundle_length);
-    assert(!notification_is_telegram(&item));
+    TEST_CHECK(!notification_is_telegram(&item));
 }
 
 static void test_preserves_text_and_removes_emoji(void)
@@ -45,9 +45,9 @@ static void test_preserves_text_and_removes_emoji(void)
 
     notification_normalize(&item);
 
-    assert(strcmp(item.title, "Стас") == 0);
-    assert(strcmp(item.subtitle, "Ѐ ӿ «Ответ» — да!") == 0);
-    assert(strcmp(item.message, "Привет test") == 0);
+    TEST_CHECK(strcmp(item.title, "Стас") == 0);
+    TEST_CHECK(strcmp(item.subtitle, "Ѐ ӿ «Ответ» — да!") == 0);
+    TEST_CHECK(strcmp(item.message, "Привет test") == 0);
 }
 
 static void test_removes_unsupported_valid_unicode(void)
@@ -58,7 +58,7 @@ static void test_removes_unsupported_valid_unicode(void)
 
     notification_normalize(&item);
 
-    assert(strcmp(item.message, "ABC — «да»…") == 0);
+    TEST_CHECK(strcmp(item.message, "ABC — «да»…") == 0);
 }
 
 static void test_skips_invalid_utf8_one_byte_at_a_time(void)
@@ -86,9 +86,9 @@ static void test_skips_invalid_utf8_one_byte_at_a_time(void)
 
     notification_normalize(&item);
 
-    assert(strcmp(item.message, "bad((text") == 0);
-    assert(strcmp(item.title, "x") == 0);
-    assert(strcmp(item.subtitle, "abcd") == 0);
+    TEST_CHECK(strcmp(item.message, "bad((text") == 0);
+    TEST_CHECK(strcmp(item.title, "x") == 0);
+    TEST_CHECK(strcmp(item.subtitle, "abcd") == 0);
 }
 
 static void test_removes_emoji_joiners_and_variation_selectors(void)
@@ -108,8 +108,8 @@ static void test_removes_emoji_joiners_and_variation_selectors(void)
 
     notification_normalize(&item);
 
-    assert(strcmp(item.title, "") == 0);
-    assert(strcmp(item.message, "AB") == 0);
+    TEST_CHECK(strcmp(item.title, "") == 0);
+    TEST_CHECK(strcmp(item.message, "AB") == 0);
 }
 
 static void test_collapses_and_trims_ascii_whitespace(void)
@@ -120,7 +120,7 @@ static void test_collapses_and_trims_ascii_whitespace(void)
 
     notification_normalize(&item);
 
-    assert(strcmp(item.message, "Привет test") == 0);
+    TEST_CHECK(strcmp(item.message, "Привет test") == 0);
 }
 
 static void test_respects_output_bounds_and_terminates_fields(void)
