@@ -7,6 +7,7 @@
 #include "app_state.h"
 #include "notification.h"
 #include "notification_normalizer.h"
+#include "display_layout.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -27,6 +28,20 @@ _Static_assert(sizeof(((notification_t *)0)->subtitle) ==
 _Static_assert(sizeof(((notification_t *)0)->message) ==
                    SIM_NOTIFICATION_MESSAGE_CAPACITY,
                "core and simulator message capacities differ");
+_Static_assert(SIM_DISPLAY_MAX_COLUMNS == DISPLAY_LAYOUT_MAX_COLUMNS,
+               "firmware and simulator display columns differ");
+_Static_assert(SIM_DISPLAY_MAX_LINES == DISPLAY_LAYOUT_MAX_LINES,
+               "firmware and simulator display lines differ");
+_Static_assert(SIM_DISPLAY_FONT_WIDTH == DISPLAY_FONT_WIDTH,
+               "firmware and simulator font widths differ");
+_Static_assert(SIM_DISPLAY_FONT_HEIGHT == DISPLAY_FONT_HEIGHT,
+               "firmware and simulator font heights differ");
+_Static_assert((int)SIM_DISPLAY_LINE_STATUS == (int)DISPLAY_LINE_STATUS &&
+                   (int)SIM_DISPLAY_LINE_WARNING == (int)DISPLAY_LINE_WARNING &&
+                   (int)SIM_DISPLAY_LINE_TITLE == (int)DISPLAY_LINE_TITLE &&
+                   (int)SIM_DISPLAY_LINE_SUBTITLE == (int)DISPLAY_LINE_SUBTITLE &&
+                   (int)SIM_DISPLAY_LINE_BODY == (int)DISPLAY_LINE_BODY,
+               "firmware and simulator display styles differ");
 
 typedef struct {
     app_state_t app;
@@ -253,5 +268,88 @@ SIMULATOR_EXPORT int32_t simulator_snapshot(simulator_snapshot_t *out)
     out->notification_present = screen.notification_present ? 1U : 0U;
     out->beep_requested = simulator.beep_requested ? 1U : 0U;
     copy_notification(&out->notification, &screen.notification);
+    return SIM_OK;
+}
+
+static display_connection_t display_connection(app_connection_state_t state)
+{
+    switch (state) {
+    case APP_CONNECTION_PAIRING:
+        return DISPLAY_CONNECTION_PAIRING;
+    case APP_CONNECTION_CONNECTED:
+        return DISPLAY_CONNECTION_CONNECTED;
+    case APP_CONNECTION_RECONNECTING:
+        return DISPLAY_CONNECTION_RECONNECTING;
+    case APP_CONNECTION_ERROR:
+    default:
+        return DISPLAY_CONNECTION_ERROR;
+    }
+}
+
+static display_bond_reset_state_t display_bond_reset(
+    app_bond_reset_state_t state)
+{
+    switch (state) {
+    case APP_BOND_RESET_HOLDING:
+        return DISPLAY_BOND_RESET_HOLDING;
+    case APP_BOND_RESET_REQUESTED:
+    case APP_BOND_RESET_SUBMITTED:
+        return DISPLAY_BOND_RESET_REQUESTED;
+    case APP_BOND_RESET_COMPLETED:
+        return DISPLAY_BOND_RESET_COMPLETED;
+    case APP_BOND_RESET_FAILED:
+        return DISPLAY_BOND_RESET_FAILED;
+    case APP_BOND_RESET_IDLE:
+    default:
+        return DISPLAY_BOND_RESET_NONE;
+    }
+}
+
+SIMULATOR_EXPORT int32_t
+simulator_display_plan(simulator_display_plan_t *out)
+{
+    const int32_t initialized = require_initialized();
+    if (initialized != SIM_OK) {
+        return initialized;
+    }
+    if (out == NULL) {
+        return SIM_ERR_NULL_ARGUMENT;
+    }
+
+    app_screen_t screen;
+    display_render_plan_t source;
+    app_screen_make(&simulator.app, &screen);
+    display_render_plan_make(
+        display_connection(screen.connection), screen.battery_percent,
+        screen.position, screen.total,
+        screen.notification_present ? &screen.notification : NULL,
+        display_bond_reset(screen.bond_reset_state),
+        screen.bond_reset_progress_percent, &source);
+
+    memset(out, 0, sizeof(*out));
+    for (size_t line = 0U; line < SIM_DISPLAY_MAX_LINES; ++line) {
+        out->lines[line].length = (uint8_t)source.lines[line].length;
+        out->lines[line].style = (uint8_t)source.lines[line].style;
+        memcpy(out->lines[line].glyphs, source.lines[line].glyphs,
+               sizeof(out->lines[line].glyphs));
+    }
+    return SIM_OK;
+}
+
+SIMULATOR_EXPORT int32_t
+simulator_font_glyph(uint32_t codepoint, simulator_font_glyph_t *out)
+{
+    const int32_t initialized = require_initialized();
+    if (initialized != SIM_OK) {
+        return initialized;
+    }
+    if (out == NULL) {
+        return SIM_ERR_NULL_ARGUMENT;
+    }
+    const uint16_t *rows = NULL;
+    if (!display_font_get_glyph(codepoint, &rows)) {
+        return SIM_ERR_INVALID_ARGUMENT;
+    }
+    memcpy(out->rows, rows, sizeof(out->rows));
     return SIM_OK;
 }

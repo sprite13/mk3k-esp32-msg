@@ -11,6 +11,8 @@
   "_simulator_set_previews_hidden",
   "_simulator_take_beep",
   "_simulator_snapshot",
+  "_simulator_display_plan",
+  "_simulator_font_glyph",
   "_malloc",
   "_free"
 ]

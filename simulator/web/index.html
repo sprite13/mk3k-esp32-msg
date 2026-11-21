@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow">
+  <title>M5StickC Plus2 — симулятор Telegram</title>
+  <link rel="stylesheet" href="./styles/main.css">
+</head>
+<body>
+  <header class="page-header">
+    <p class="eyebrow">mk3k · WebAssembly preview</p>
+    <h1>M5StickC Plus2</h1>
+    <p>Симулятор логики и интерфейса прошивки. Он не эмулирует BLE/ANCS, физическое
+      железо и расход батареи.</p>
+  </header>
+
+  <main class="simulator-shell">
+    <section class="device-panel" aria-label="Виртуальный M5StickC Plus2">
+      <div class="device" aria-describedby="device-hint">
+        <img class="device-outline" src="./assets/m5stick-outline.svg" alt="" aria-hidden="true">
+        <canvas id="device-screen" width="135" height="240"
+          aria-label="Экран виртуального M5StickC Plus2"></canvas>
+        <button id="button-a" class="device-button button-a" type="button"
+          aria-label="Кнопка A: более старое уведомление">A</button>
+        <button id="button-b" class="device-button button-b" type="button"
+          aria-label="Кнопка B: более новое уведомление; удержание моделируется">B</button>
+      </div>
+      <p id="device-hint" class="device-hint">A — старее · B — новее · экран гаснет через 10 секунд</p>
+      <p id="runtime-status" class="runtime-status" role="status">Загрузка WebAssembly…</p>
+    </section>
+
+    <section class="controls-panel" aria-label="Управление симулятором">
+      <form id="notification-form" class="control-card">
+        <h2>Тестовое уведомление</h2>
+        <label>Имя
+          <input name="title" maxlength="95" autocomplete="off" value="Алиса">
+        </label>
+        <label>Подзаголовок
+          <input name="subtitle" maxlength="95" autocomplete="off" value="Семья">
+        </label>
+        <label>Текст
+          <textarea name="message" maxlength="255" rows="3">Буду через 10 минут</textarea>
+        </label>
+        <button class="primary" type="submit">Отправить</button>
+      </form>
+
+      <fieldset class="control-card state-controls">
+        <legend>Состояние</legend>
+        <label>Связь с iPhone
+          <select id="connection">
+            <option value="0">Сопряжение</option>
+            <option value="1" selected>Подключено</option>
+            <option value="2">Нет связи</option>
+            <option value="3">Ошибка</option>
+          </select>
+        </label>
+        <label>Заряд батареи
+          <select id="battery">
+            <option value="255">Неизвестно</option>
+            <option value="100">100%</option>
+            <option value="75" selected>75%</option>
+            <option value="50">50%</option>
+            <option value="15">15% — низкий</option>
+            <option value="5">5% — критический</option>
+          </select>
+        </label>
+        <label class="check-row"><input id="previews-hidden" type="checkbox">
+          Скрытые previews</label>
+        <label class="check-row"><input id="audio-enabled" type="checkbox">
+          Включить звук</label>
+        <button id="reset-simulator" type="button">Сбросить симулятор</button>
+      </fieldset>
+
+      <section class="control-card scenarios" aria-labelledby="scenarios-title">
+        <h2 id="scenarios-title">Готовые сценарии</h2>
+        <div class="scenario-grid">
+          <button type="button" data-scenario="normal">Обычное</button>
+          <button type="button" data-scenario="title-only">Только имя</button>
+          <button type="button" data-scenario="message-only">Только текст</button>
+          <button type="button" data-scenario="empty">Пустое</button>
+          <button type="button" data-scenario="long">Длинный текст</button>
+          <button type="button" data-scenario="six-message-burst">Серия из 6</button>
+          <button type="button" data-scenario="connection-loss-recovery">Потеря связи</button>
+          <button type="button" data-scenario="hidden-previews">Скрытые previews</button>
+        </div>
+      </section>
+
+      <p class="privacy-note">Введённый текст остаётся в памяти этой вкладки: backend,
+        API, cookies и локальное хранилище не используются.</p>
+    </section>
+  </main>
+  <script type="module" src="./src/app.mjs"></script>
+</body>
+</html>

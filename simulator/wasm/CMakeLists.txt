@@ -30,7 +30,14 @@ if(NOT TARGET app_core)
     project_apply_compile_policy(app_core)
 endif()
 
-add_library(simulator_api simulator_api.c)
-target_include_directories(simulator_api PUBLIC ${CMAKE_CURRENT_LIST_DIR})
+add_library(simulator_api
+    simulator_api.c
+    ${SIMULATOR_ROOT}/components/display_ui/display_layout.c
+    ${SIMULATOR_ROOT}/components/display_ui/font_12x20_cyrillic.c
+)
+target_include_directories(simulator_api PUBLIC
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${SIMULATOR_ROOT}/components/display_ui
+)
 target_link_libraries(simulator_api PUBLIC app_core)
 project_apply_compile_policy(simulator_api)

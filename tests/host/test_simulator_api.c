@@ -35,6 +35,9 @@ static void test_operations_require_reset(void)
     TEST_CHECK(simulator_set_previews_hidden(true) ==
                SIM_ERR_NOT_INITIALIZED);
     TEST_CHECK(simulator_take_beep() == SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_display_plan(NULL) == SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_font_glyph((uint32_t)'A', NULL) ==
+               SIM_ERR_NOT_INITIALIZED);
 }
 
 static void test_reset_version_and_defaults(void)
@@ -269,6 +272,36 @@ static void test_timeout_and_long_hold(void)
     TEST_CHECK(state.display_awake == 1U);
 }
 
+static void test_display_plan_and_bitmap_font_bridge(void)
+{
+    simulator_display_plan_t plan;
+    simulator_font_glyph_t glyph;
+
+    TEST_CHECK(simulator_reset(0) == SIM_OK);
+    TEST_CHECK(simulator_display_plan(NULL) == SIM_ERR_NULL_ARGUMENT);
+    TEST_CHECK(simulator_font_glyph((uint32_t)'A', NULL) ==
+               SIM_ERR_NULL_ARGUMENT);
+    TEST_CHECK(simulator_font_glyph(UINT32_C(0x1F44B), &glyph) ==
+               SIM_ERR_INVALID_ARGUMENT);
+
+    connect_at(1);
+    TEST_CHECK(simulator_set_battery(10U, 2) == SIM_OK);
+    TEST_CHECK(simulator_send_notification("Алиса", "Чат", "Привет", 3) ==
+               SIM_OK);
+    TEST_CHECK(simulator_display_plan(&plan) == SIM_OK);
+    TEST_CHECK(plan.lines[0].style == SIM_DISPLAY_LINE_WARNING);
+    TEST_CHECK(plan.lines[0].length > 0U);
+    TEST_CHECK(plan.lines[1].style == SIM_DISPLAY_LINE_TITLE);
+    TEST_CHECK(plan.lines[1].glyphs[0] == UINT32_C(0x0410));
+
+    TEST_CHECK(simulator_font_glyph(UINT32_C(0x0410), &glyph) == SIM_OK);
+    bool has_pixel = false;
+    for (size_t row = 0U; row < SIM_DISPLAY_FONT_HEIGHT; ++row) {
+        has_pixel = has_pixel || glyph.rows[row] != 0U;
+    }
+    TEST_CHECK(has_pixel);
+}
+
 int main(void)
 {
     test_operations_require_reset();
@@ -280,5 +313,6 @@ int main(void)
     test_disconnected_and_hidden_previews();
     test_eviction_and_button_ordering();
     test_timeout_and_long_hold();
+    test_display_plan_and_bitmap_font_bridge();
     return 0;
 }

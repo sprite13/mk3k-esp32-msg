@@ -52,12 +52,15 @@ common_sources=(
     components/app_core/app_screen.c
     components/notification_core/notification_queue.c
     components/notification_core/notification_normalizer.c
+    components/display_ui/display_layout.c
+    components/display_ui/font_12x20_cyrillic.c
     simulator/wasm/simulator_api.c
 )
 common_flags=(
     -std=c17 -O2 -Wall -Wextra -Werror
     -Icomponents/app_core/include
     -Icomponents/notification_core/include
+    -Icomponents/display_ui
     -Isimulator/wasm
 )
 

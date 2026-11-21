@@ -1,0 +1,116 @@
+:root {
+  color-scheme: dark;
+  --bg: #080b10;
+  --panel: #111721;
+  --panel-raised: #171f2b;
+  --line: #2b3543;
+  --text: #eef2f7;
+  --muted: #9ca9b8;
+  --accent: #ffc44a;
+  --teal: #4fd1c5;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  color: var(--text);
+  background: radial-gradient(circle at 50% -10%, #1a2636 0, var(--bg) 42rem);
+}
+button, input, textarea, select { font: inherit; }
+button, input, textarea, select {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  background: #0c1118;
+}
+button { cursor: pointer; padding: .65rem .85rem; }
+button:hover { border-color: var(--teal); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+
+.page-header {
+  max-width: 70rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem .5rem;
+}
+.page-header h1 { margin: .15rem 0 .4rem; font-size: clamp(1.8rem, 7vw, 3rem); }
+.page-header p { max-width: 48rem; color: var(--muted); }
+.page-header .eyebrow { color: var(--teal); font-size: .8rem; letter-spacing: .12em; text-transform: uppercase; }
+
+.simulator-shell {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 70rem;
+  margin: 0 auto;
+  padding: 1rem max(1rem, env(safe-area-inset-right)) 3rem max(1rem, env(safe-area-inset-left));
+}
+.device-panel { display: grid; justify-items: center; align-content: start; }
+.device {
+  position: relative;
+  width: min(18.2rem, 88vw);
+  aspect-ratio: 0.59;
+  filter: drop-shadow(0 1.5rem 2rem #0009);
+}
+.device-outline { position: absolute; inset: 0; width: 100%; height: 100%; }
+#device-screen {
+  position: absolute;
+  left: 16.7%;
+  top: 9.2%;
+  width: 66.6%;
+  height: 73.8%;
+  image-rendering: pixelated;
+  background: #000;
+  border-radius: 2px;
+}
+.device-button {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  min-width: 44px;
+  padding: 0;
+  border-radius: 50%;
+  color: #30343a;
+  background: linear-gradient(#e2e5e8, #90969d);
+  font-weight: 800;
+  box-shadow: inset 0 -3px 4px #0005, 0 3px 5px #0008;
+  touch-action: none;
+  user-select: none;
+}
+.device-button:active, .device-button.is-pressed { transform: translateY(2px); box-shadow: inset 0 2px 5px #0008; }
+.button-a { left: 41%; bottom: 4.5%; width: 18%; aspect-ratio: 1; }
+.button-b { right: -4%; top: 25%; width: 15%; aspect-ratio: 1; }
+.device-hint, .runtime-status { margin: .65rem 0 0; color: var(--muted); text-align: center; font-size: .9rem; }
+.runtime-status[data-error="true"] { color: #ff8f8f; }
+
+.controls-panel { display: grid; gap: 1rem; align-content: start; }
+.control-card {
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 93%, transparent);
+}
+.control-card h2, .control-card legend { margin: 0 0 .8rem; font-size: 1.05rem; font-weight: 750; }
+.control-card label:not(.check-row) { display: grid; gap: .35rem; margin-top: .75rem; color: var(--muted); }
+.control-card input, .control-card textarea, .control-card select { width: 100%; padding: .65rem .75rem; }
+.control-card textarea { resize: vertical; }
+.primary { width: 100%; margin-top: 1rem; color: #14100a; background: var(--accent); border-color: var(--accent); font-weight: 800; }
+.check-row { display: flex; align-items: center; gap: .65rem; min-height: 44px; }
+.check-row input { width: 1.25rem; min-height: 1.25rem; accent-color: var(--teal); }
+.state-controls > button { width: 100%; margin-top: .5rem; }
+.scenario-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }
+.privacy-note { margin: 0; color: var(--muted); font-size: .85rem; }
+
+@media (min-width: 760px) {
+  .simulator-shell { grid-template-columns: minmax(19rem, .9fr) minmax(23rem, 1.2fr); align-items: start; }
+  .device-panel { position: sticky; top: 1rem; }
+  .controls-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .controls-panel .scenarios, .controls-panel .privacy-note { grid-column: 1 / -1; }
+  .device { width: min(22rem, 38vw); }
+}
+
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }

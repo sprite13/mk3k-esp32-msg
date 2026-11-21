@@ -10,6 +10,10 @@
 #define SIM_NOTIFICATION_TITLE_CAPACITY 96U
 #define SIM_NOTIFICATION_SUBTITLE_CAPACITY 96U
 #define SIM_NOTIFICATION_MESSAGE_CAPACITY 256U
+#define SIM_DISPLAY_MAX_COLUMNS 20U
+#define SIM_DISPLAY_MAX_LINES 6U
+#define SIM_DISPLAY_FONT_WIDTH 12U
+#define SIM_DISPLAY_FONT_HEIGHT 20U
 
 /* Any incompatible layout or semantic change to this ABI must bump the
  * version. Fields may not be reordered, resized, or repurposed in place. */
@@ -51,6 +55,29 @@ typedef struct {
     simulator_notification_t notification;
 } simulator_snapshot_t;
 
+typedef enum {
+    SIM_DISPLAY_LINE_STATUS = 0,
+    SIM_DISPLAY_LINE_WARNING = 1,
+    SIM_DISPLAY_LINE_TITLE = 2,
+    SIM_DISPLAY_LINE_SUBTITLE = 3,
+    SIM_DISPLAY_LINE_BODY = 4,
+} simulator_display_line_style_t;
+
+typedef struct {
+    uint8_t length;
+    uint8_t style;
+    uint8_t reserved[2];
+    uint32_t glyphs[SIM_DISPLAY_MAX_COLUMNS];
+} simulator_display_line_t;
+
+typedef struct {
+    simulator_display_line_t lines[SIM_DISPLAY_MAX_LINES];
+} simulator_display_plan_t;
+
+typedef struct {
+    uint16_t rows[SIM_DISPLAY_FONT_HEIGHT];
+} simulator_font_glyph_t;
+
 _Static_assert(sizeof(simulator_notification_t) == 516U,
                "simulator notification ABI size changed");
 _Static_assert(offsetof(simulator_notification_t, uid) == 0U,
@@ -85,6 +112,14 @@ _Static_assert(offsetof(simulator_snapshot_t, reserved) == 11U,
                "simulator snapshot reserved offset changed");
 _Static_assert(offsetof(simulator_snapshot_t, notification) == 12U,
                "simulator snapshot notification offset changed");
+_Static_assert(sizeof(simulator_display_line_t) == 84U,
+               "simulator display-line ABI size changed");
+_Static_assert(offsetof(simulator_display_line_t, glyphs) == 4U,
+               "simulator display-line glyph offset changed");
+_Static_assert(sizeof(simulator_display_plan_t) == 504U,
+               "simulator display-plan ABI size changed");
+_Static_assert(sizeof(simulator_font_glyph_t) == 40U,
+               "simulator font-glyph ABI size changed");
 
 uint32_t simulator_abi_version(void);
 int32_t simulator_reset(int64_t now_us);
@@ -101,3 +136,7 @@ int32_t simulator_set_battery(uint8_t percent, int64_t now_us);
 int32_t simulator_set_previews_hidden(bool hidden);
 int32_t simulator_take_beep(void);
 int32_t simulator_snapshot(simulator_snapshot_t *out);
+/* Produces the exact shared firmware render plan for the current snapshot. */
+int32_t simulator_display_plan(simulator_display_plan_t *out);
+/* Copies the exact 12x20 firmware bitmap rows for one supported codepoint. */
+int32_t simulator_font_glyph(uint32_t codepoint, simulator_font_glyph_t *out);
