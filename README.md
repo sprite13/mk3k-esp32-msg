@@ -166,6 +166,32 @@ previews, отказ без соединения и известный/неиз�
 BLE/ANCS на iPhone, дисплей, кнопки, звук, ADC, энергопотребление, браузерный UI
 или поведение за пределами этих сценариев.
 
+### Пакет и preview-деплой
+
+Статический runtime-пакет создаётся и проверяется командами:
+
+```bash
+scripts/package-web-simulator.sh
+scripts/package-web-simulator.sh --check artifacts/mk3k-esp32-preview
+(cd artifacts/mk3k-esp32-preview && sha256sum -c SHA256SUMS)
+```
+
+Для публикации используется release-каталог и атомарная относительная ссылка
+`current`; старые releases автоматически не удаляются:
+
+```bash
+scripts/deploy-web-simulator.sh \
+  --host les13.tech \
+  artifacts/mk3k-esp32-preview
+scripts/deploy-web-simulator.sh --host les13.tech --rollback
+```
+
+Перед первым запуском location из `deploy/nginx/mk3k-esp32-preview.conf` нужно
+аккуратно добавить в существующий HTTPS `server` для `les13.tech`. Фрагмент не
+является полной конфигурацией сайта и не должен заменять другие маршруты.
+Полный порядок preflight, backup, deploy, проверки и rollback описан в
+[`docs/web-simulator-deployment.md`](docs/web-simulator-deployment.md).
+
 Host-тесты с ASan/UBSan:
 
 ```bash

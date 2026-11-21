@@ -7,3 +7,4 @@ sdkconfig.old
 /simulator/web/artifacts/
 /simulator/web/dist/mk3k-simulator.mjs
 /simulator/web/dist/mk3k-simulator.wasm
+/artifacts/mk3k-esp32-preview/
