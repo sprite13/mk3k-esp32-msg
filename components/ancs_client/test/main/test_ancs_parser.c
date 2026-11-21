@@ -359,6 +359,37 @@ TEST_CASE("stale attribute tail resynchronizes to active uid", "[ancs_parser]")
     TEST_ASSERT_EQUAL_HEX32(43U, capture.notification.uid);
 }
 
+TEST_CASE("overlapping zero headers resynchronize across fragments", "[ancs_parser]")
+{
+    static const uint8_t stale_zeros[] = {0U, 0U, 0U, 0U, 0U, 0U, 0U};
+    const size_t prefix_lengths[] = {1U, 2U, sizeof(stale_zeros)};
+    const uint32_t uid = 0x00000100U;
+    uint8_t expected[128];
+    const size_t expected_length = make_complete_response(expected, uid);
+
+    for (size_t prefix_index = 0U;
+         prefix_index < sizeof(prefix_lengths) / sizeof(prefix_lengths[0]);
+         ++prefix_index) {
+        for (size_t split = 0U; split <= 5U; ++split) {
+            ancs_parser_t parser;
+            callback_capture_t capture = {0};
+
+            ancs_parser_init(&parser, capture_notification, &capture);
+            ancs_parser_expect(&parser, uid, 0U);
+            for (size_t index = 0U; index < prefix_lengths[prefix_index];
+                 ++index) {
+                ancs_parser_feed(&parser, &stale_zeros[index], 1U, 1U);
+            }
+            ancs_parser_feed(&parser, expected, split, 2U);
+            ancs_parser_feed(&parser, &expected[split], expected_length - split,
+                             3U);
+
+            TEST_ASSERT_EQUAL_UINT(1U, capture.calls);
+            TEST_ASSERT_EQUAL_HEX32(uid, capture.notification.uid);
+        }
+    }
+}
+
 TEST_CASE("completion stops before trailing bytes after callback reset", "[ancs_parser]")
 {
     ancs_parser_t parser;

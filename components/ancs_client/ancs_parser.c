@@ -17,6 +17,32 @@ static uint32_t read_le32(const uint8_t *value)
            ((uint32_t)value[3] << 24U);
 }
 
+static void make_expected_header(const ancs_parser_t *parser, uint8_t header[5])
+{
+    header[0] = ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES;
+    header[1] = (uint8_t)(parser->expected_uid & 0xffU);
+    header[2] = (uint8_t)((parser->expected_uid >> 8U) & 0xffU);
+    header[3] = (uint8_t)((parser->expected_uid >> 16U) & 0xffU);
+    header[4] = (uint8_t)((parser->expected_uid >> 24U) & 0xffU);
+}
+
+static void make_prefix_lengths(const uint8_t *pattern, size_t length,
+                                uint8_t *prefix_lengths)
+{
+    uint8_t matched = 0U;
+
+    prefix_lengths[0] = 0U;
+    for (size_t index = 1U; index < length; ++index) {
+        while (matched > 0U && pattern[index] != pattern[matched]) {
+            matched = prefix_lengths[matched - 1U];
+        }
+        if (pattern[index] == pattern[matched]) {
+            matched++;
+        }
+        prefix_lengths[index] = matched;
+    }
+}
+
 static void parser_reset_response(ancs_parser_t *parser)
 {
     memset(&parser->notification, 0, sizeof(parser->notification));
@@ -96,14 +122,16 @@ static bool finish_attribute(ancs_parser_t *parser)
 static bool consume_response_header(ancs_parser_t *parser, uint8_t byte)
 {
     if (parser->resync_expected_header) {
-        const uint8_t expected[] = {
-            ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES,
-            (uint8_t)(parser->expected_uid & 0xffU),
-            (uint8_t)((parser->expected_uid >> 8U) & 0xffU),
-            (uint8_t)((parser->expected_uid >> 16U) & 0xffU),
-            (uint8_t)((parser->expected_uid >> 24U) & 0xffU),
-        };
+        uint8_t expected[5];
+        uint8_t prefix_lengths[5];
 
+        make_expected_header(parser, expected);
+        make_prefix_lengths(expected, sizeof(expected), prefix_lengths);
+        while (parser->response_header_length > 0U &&
+               byte != expected[parser->response_header_length]) {
+            parser->response_header_length =
+                prefix_lengths[parser->response_header_length - 1U];
+        }
         if (byte == expected[parser->response_header_length]) {
             parser->response_header_length++;
             if (parser->response_header_length == sizeof(expected)) {
@@ -111,9 +139,6 @@ static bool consume_response_header(ancs_parser_t *parser, uint8_t byte)
                 parser->resync_expected_header = false;
                 parser->stage = ANCS_PARSER_ATTRIBUTE_HEADER;
             }
-        } else {
-            parser->response_header_length =
-                byte == ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES ? 1U : 0U;
         }
         return false;
     }

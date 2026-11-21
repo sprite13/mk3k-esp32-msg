@@ -100,6 +100,37 @@ static void test_stale_attribute_tail_resynchronizes_to_active_uid(void)
     TEST_CHECK(capture.uid == 22U);
 }
 
+static void test_overlapping_zero_prefix_resynchronizes_at_every_split(void)
+{
+    static const uint8_t stale_zeros[] = {0U, 0U, 0U, 0U, 0U, 0U, 0U};
+    const size_t prefix_lengths[] = {1U, 2U, sizeof(stale_zeros)};
+    const uint32_t uid = 0x00000100U;
+    uint8_t expected[96];
+    const size_t expected_length = make_response(expected, uid);
+
+    for (size_t prefix_index = 0U;
+         prefix_index < sizeof(prefix_lengths) / sizeof(prefix_lengths[0]);
+         ++prefix_index) {
+        for (size_t split = 0U; split <= 5U; ++split) {
+            ancs_parser_t parser;
+            capture_t capture = {.parser = &parser};
+
+            ancs_parser_init(&parser, capture_notification, &capture);
+            ancs_parser_expect(&parser, uid, 0U);
+            for (size_t index = 0U; index < prefix_lengths[prefix_index];
+                 ++index) {
+                ancs_parser_feed(&parser, &stale_zeros[index], 1U, 1U);
+            }
+            ancs_parser_feed(&parser, expected, split, 2U);
+            ancs_parser_feed(&parser, &expected[split], expected_length - split,
+                             3U);
+
+            TEST_CHECK(capture.calls == 1U);
+            TEST_CHECK(capture.uid == uid);
+        }
+    }
+}
+
 static void test_completion_ignores_trailing_bytes_after_reset(void)
 {
     ancs_parser_t parser;
@@ -142,6 +173,7 @@ int main(void)
 {
     test_late_response_preserves_active_request();
     test_stale_attribute_tail_resynchronizes_to_active_uid();
+    test_overlapping_zero_prefix_resynchronizes_at_every_split();
     test_completion_ignores_trailing_bytes_after_reset();
     test_queue_preserves_repeated_events_and_removes_all_uid();
     return 0;
