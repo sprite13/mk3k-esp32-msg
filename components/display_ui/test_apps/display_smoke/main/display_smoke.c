@@ -46,6 +46,7 @@ static const display_ui_model_t s_screens[] = {
 
 void app_main(void)
 {
+    ESP_ERROR_CHECK(board_power_hold_init());
     board_init();
     ESP_ERROR_CHECK(display_ui_init());
     board_backlight_set(true);

@@ -180,6 +180,29 @@ static void test_bond_reset_stale_transitions_do_not_report(void)
                ANCS_BOND_ACTION_NONE);
 }
 
+static void test_bonded_peer_admission(void)
+{
+    const ancs_peer_identity_t known = {
+        .type = 1U,
+        .value = {0x10U, 0x20U, 0x30U, 0x40U, 0x50U, 0x60U},
+    };
+    const ancs_peer_identity_t unknown = {
+        .type = 1U,
+        .value = {0x11U, 0x20U, 0x30U, 0x40U, 0x50U, 0x60U},
+    };
+
+    TEST_CHECK(ancs_peer_admission_decide(NULL, 0U, &unknown) ==
+               ANCS_PEER_ADMIT_OPEN_PAIRING);
+    TEST_CHECK(ancs_peer_admission_decide(&known, 1U, &known) ==
+               ANCS_PEER_ADMIT_BONDED);
+    TEST_CHECK(ancs_peer_admission_decide(&known, 1U, &unknown) ==
+               ANCS_PEER_REJECT_UNKNOWN);
+
+    /* A successful long-B store clear restores the no-bond admission state. */
+    TEST_CHECK(ancs_peer_admission_decide(&known, 0U, &unknown) ==
+               ANCS_PEER_ADMIT_OPEN_PAIRING);
+}
+
 int main(void)
 {
     test_removed_while_write_pending_waits_for_callback();
@@ -191,5 +214,6 @@ int main(void)
     test_bond_reset_queues_restart_after_link_stop();
     test_bond_reset_late_failure_reports_once();
     test_bond_reset_stale_transitions_do_not_report();
+    test_bonded_peer_admission();
     return 0;
 }

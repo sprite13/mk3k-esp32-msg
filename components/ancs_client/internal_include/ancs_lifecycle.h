@@ -56,6 +56,22 @@ uint32_t ancs_transport_take_reconnect_delay(ancs_transport_t *transport);
 void ancs_transport_subscriptions_ready(ancs_transport_t *transport);
 
 typedef struct {
+    uint8_t type;
+    uint8_t value[6];
+} ancs_peer_identity_t;
+
+typedef enum {
+    ANCS_PEER_ADMIT_OPEN_PAIRING,
+    ANCS_PEER_ADMIT_BONDED,
+    ANCS_PEER_REJECT_UNKNOWN,
+} ancs_peer_admission_t;
+
+ancs_peer_admission_t
+ancs_peer_admission_decide(const ancs_peer_identity_t *bonded_peers,
+                           size_t bonded_peer_count,
+                           const ancs_peer_identity_t *peer);
+
+typedef struct {
     uint16_t start_handle;
     uint16_t end_handle;
 } ancs_handle_range_t;

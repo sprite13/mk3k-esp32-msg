@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "driver/gpio.h"
+#include "esp_err.h"
 
 enum {
     BOARD_LCD_SCLK = GPIO_NUM_13,
@@ -26,6 +27,7 @@ typedef struct {
     bool power_down;
 } board_buttons_t;
 
+esp_err_t board_power_hold_init(void);
 void board_init(void);
 void board_backlight_set(bool enabled);
 void board_beep(uint32_t frequency_hz, uint32_t duration_ms);

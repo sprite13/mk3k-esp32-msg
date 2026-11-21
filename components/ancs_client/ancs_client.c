@@ -779,6 +779,43 @@ static void clear_bonds_and_queue_restart(void)
     }
 }
 
+static ancs_peer_identity_t peer_identity(const ble_addr_t *address)
+{
+    ancs_peer_identity_t identity = {.type = address->type};
+    memcpy(identity.value, address->val, sizeof(identity.value));
+    return identity;
+}
+
+static bool connected_peer_is_admitted(uint16_t conn_handle)
+{
+    ble_addr_t bonded_addresses[1];
+    ancs_peer_identity_t bonded_peers[1];
+    struct ble_gap_conn_desc desc;
+    int bonded_peer_count = 0;
+    int rc = ble_store_util_bonded_peers(bonded_addresses, &bonded_peer_count,
+                                         1);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "bond lookup for peer admission failed: rc=%d", rc);
+        return false;
+    }
+    rc = ble_gap_conn_find(conn_handle, &desc);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "resolved peer identity lookup failed: rc=%d", rc);
+        return false;
+    }
+    for (int index = 0; index < bonded_peer_count; ++index) {
+        bonded_peers[index] = peer_identity(&bonded_addresses[index]);
+    }
+    const ancs_peer_identity_t connected = peer_identity(&desc.peer_id_addr);
+    const ancs_peer_admission_t admission = ancs_peer_admission_decide(
+        bonded_peers, (size_t)bonded_peer_count, &connected);
+    if (admission == ANCS_PEER_REJECT_UNKNOWN) {
+        ESP_LOGW(TAG, "rejecting connection from unknown identity while bonded");
+        return false;
+    }
+    return true;
+}
+
 static void forget_event(struct ble_npl_event *event)
 {
     ancs_bond_action_t action;
@@ -818,13 +855,21 @@ static void forget_event(struct ble_npl_event *event)
 static int gap_event(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
-    struct ble_gap_conn_desc desc;
     int rc;
 
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status != 0) {
             schedule_reconnect();
+            return 0;
+        }
+        if (!connected_peer_is_admitted(event->connect.conn_handle)) {
+            rc = ble_gap_terminate(event->connect.conn_handle,
+                                   BLE_ERR_REM_USER_CONN_TERM);
+            if (rc != 0) {
+                ESP_LOGE(TAG, "unadmitted peer termination failed: rc=%d", rc);
+                emit_state(ANCS_CLIENT_ERROR);
+            }
             return 0;
         }
         s_client.conn_handle = event->connect.conn_handle;
@@ -880,13 +925,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
-        rc = ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
-        if (rc != 0) {
-            return BLE_GAP_REPEAT_PAIRING_IGNORE;
-        }
-        rc = ble_store_util_delete_peer(&desc.peer_id_addr);
-        return rc == 0 ? BLE_GAP_REPEAT_PAIRING_RETRY :
-                         BLE_GAP_REPEAT_PAIRING_IGNORE;
+        ESP_LOGW(TAG, "repeat pairing refused; hold B for 5 seconds to clear bond");
+        return BLE_GAP_REPEAT_PAIRING_IGNORE;
 
     case BLE_GAP_EVENT_PASSKEY_ACTION:
         ESP_LOGW(TAG, "unexpected passkey action %u",

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -19,10 +18,9 @@ typedef struct {
     size_t head;
     size_t count;
     size_t capacity;
-    atomic_flag lock;
 } app_notification_ring_t;
 
-/* Push, pop, and size each linearize under the ring's short spinlock. */
+/* The caller provides synchronization; these operations are pure ring logic. */
 bool app_notification_ring_init(app_notification_ring_t *ring,
                                 size_t capacity);
 app_notification_ring_result_t app_notification_ring_push(

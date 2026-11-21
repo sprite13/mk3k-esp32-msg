@@ -160,6 +160,27 @@ void ancs_transport_subscriptions_ready(ancs_transport_t *transport)
     transport->reconnect_failures = 0U;
 }
 
+ancs_peer_admission_t
+ancs_peer_admission_decide(const ancs_peer_identity_t *bonded_peers,
+                           size_t bonded_peer_count,
+                           const ancs_peer_identity_t *peer)
+{
+    if (bonded_peer_count == 0U) {
+        return ANCS_PEER_ADMIT_OPEN_PAIRING;
+    }
+    if (bonded_peers == NULL || peer == NULL) {
+        return ANCS_PEER_REJECT_UNKNOWN;
+    }
+    for (size_t index = 0U; index < bonded_peer_count; ++index) {
+        if (bonded_peers[index].type == peer->type &&
+            memcmp(bonded_peers[index].value, peer->value,
+                   sizeof(peer->value)) == 0) {
+            return ANCS_PEER_ADMIT_BONDED;
+        }
+    }
+    return ANCS_PEER_REJECT_UNKNOWN;
+}
+
 ancs_service_changed_decision_t
 ancs_service_changed_decide(const uint8_t *data, size_t length,
                             ancs_handle_range_t *range)

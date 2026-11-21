@@ -12,6 +12,7 @@ static const char *const TAG = "board_smoke";
 
 void app_main(void)
 {
+    ESP_ERROR_CHECK(board_power_hold_init());
     board_init();
     board_backlight_set(true);
     board_beep(1000U, 80U);

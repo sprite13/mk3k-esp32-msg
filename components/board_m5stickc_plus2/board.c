@@ -205,14 +205,22 @@ static void adc_init(void)
     }
 }
 
+esp_err_t board_power_hold_init(void)
+{
+    esp_err_t err = gpio_set_level((gpio_num_t)BOARD_POWER_HOLD, 1);
+    if (err == ESP_OK) {
+        err = gpio_set_direction((gpio_num_t)BOARD_POWER_HOLD,
+                                 GPIO_MODE_OUTPUT);
+    }
+    return err;
+}
+
 void board_init(void)
 {
+    ESP_ERROR_CHECK(board_power_hold_init());
     if (s_initialized) {
         return;
     }
-
-    ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)BOARD_POWER_HOLD, 1));
-    ESP_ERROR_CHECK(gpio_set_direction((gpio_num_t)BOARD_POWER_HOLD, GPIO_MODE_OUTPUT));
 
     ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)BOARD_LCD_BL, 0));
     ESP_ERROR_CHECK(gpio_set_direction((gpio_num_t)BOARD_LCD_BL, GPIO_MODE_OUTPUT));

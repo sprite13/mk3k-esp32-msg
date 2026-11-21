@@ -108,3 +108,10 @@ add_executable(test_power_manager test_power_manager.c)
 target_link_libraries(test_power_manager PRIVATE power_manager_core)
 project_apply_compile_policy(test_power_manager)
 add_test(NAME power_manager COMMAND test_power_manager)
+
+add_test(
+    NAME boot_power_hold_order
+    COMMAND ${CMAKE_COMMAND}
+            -DAPP_MAIN=${CMAKE_CURRENT_LIST_DIR}/../../main/app_main.c
+            -P ${CMAKE_CURRENT_LIST_DIR}/test_boot_order.cmake
+)

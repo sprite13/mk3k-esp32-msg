@@ -31,6 +31,7 @@ enum {
 
 static const char *const TAG = "app";
 static app_notification_ring_t s_notification_ring;
+static portMUX_TYPE s_notification_ring_mux = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_app_task;
 static atomic_int s_pending_connection =
     ATOMIC_VAR_INIT(APP_NO_PENDING_CONNECTION);
@@ -67,8 +68,10 @@ static void notification_callback(const notification_t *notification, void *ctx)
         return;
     }
 
+    taskENTER_CRITICAL(&s_notification_ring_mux);
     const app_notification_ring_result_t result =
         app_notification_ring_push(&s_notification_ring, notification);
+    taskEXIT_CRITICAL(&s_notification_ring_mux);
     if (result == APP_NOTIFICATION_RING_REJECTED) {
         return;
     }
@@ -77,6 +80,15 @@ static void notification_callback(const notification_t *notification, void *ctx)
                                         memory_order_relaxed);
     }
     wake_app_task();
+}
+
+static bool notification_ring_pop(notification_t *notification)
+{
+    taskENTER_CRITICAL(&s_notification_ring_mux);
+    const bool popped =
+        app_notification_ring_pop(&s_notification_ring, notification);
+    taskEXIT_CRITICAL(&s_notification_ring_mux);
+    return popped;
 }
 
 static void publish_connection_state(app_connection_state_t state)
@@ -149,6 +161,16 @@ static bool render_state(const app_state_t *state)
     const bool healthy = display_ui_is_healthy();
     board_backlight_set(healthy);
     return healthy;
+}
+
+static void render_boot_error(void)
+{
+    const display_ui_model_t model = {
+        .connection = UI_ERROR,
+        .battery_percent = app_battery_percent(board_battery_millivolts()),
+    };
+    display_ui_render(&model);
+    board_backlight_set(display_ui_is_healthy());
 }
 
 static bool event_should_render(const app_event_t *event,
@@ -300,8 +322,7 @@ static void app_task(void *arg)
         notification_t notification;
         int drained = 0;
         while (drained < APP_EVENT_QUEUE_CAPACITY &&
-               app_notification_ring_pop(&s_notification_ring,
-                                         &notification)) {
+               notification_ring_pop(&notification)) {
             const app_event_t event = {
                 .type = APP_EVENT_NOTIFICATION,
                 .data.notification = notification,
@@ -320,12 +341,34 @@ static void app_task(void *arg)
 
 void app_main(void)
 {
+    const esp_err_t hold_err = board_power_hold_init();
+    if (hold_err != ESP_OK) {
+        ESP_LOGE(TAG, "power hold initialization failed: %s",
+                 esp_err_to_name(hold_err));
+        return;
+    }
     ESP_LOGI(TAG, "m5stickc-telegram-ancs boot");
+
+    board_init();
+    const esp_err_t display_err = display_ui_init();
+    if (display_err != ESP_OK) {
+        board_backlight_set(false);
+        ESP_LOGE(TAG, "display initialization failed; backlight remains off: %s",
+                 esp_err_to_name(display_err));
+        return;
+    }
 
     const esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err != ESP_OK) {
         ESP_LOGE(TAG, "NVS initialization failed; existing data preserved: %s",
                  esp_err_to_name(nvs_err));
+        if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES ||
+            nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            ESP_LOGE(TAG, "manual recovery: idf.py -p <port> erase-flash, then "
+                          "idf.py -p <port> flash; this clears pairing and all "
+                          "firmware data");
+        }
+        render_boot_error();
         return;
     }
 
@@ -344,17 +387,10 @@ void app_main(void)
 #endif
     }
 
-    board_init();
-    const esp_err_t display_err = display_ui_init();
-    if (display_err != ESP_OK) {
-        ESP_LOGE(TAG, "display initialization failed: %s",
-                 esp_err_to_name(display_err));
-        return;
-    }
-
     if (!app_notification_ring_init(&s_notification_ring,
                                     APP_EVENT_QUEUE_CAPACITY)) {
         ESP_LOGE(TAG, "failed to initialize notification ring");
+        render_boot_error();
         return;
     }
 
@@ -364,6 +400,7 @@ void app_main(void)
     if (task_created != pdPASS) {
         ESP_LOGE(TAG, "failed to create application task");
         s_app_task = NULL;
+        render_boot_error();
         return;
     }
 

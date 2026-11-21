@@ -468,3 +468,24 @@ TEST_CASE("removed event cancels every queued request for uid", "[ancs_queue]")
     TEST_ASSERT_EQUAL_HEX32(73U, uid);
     TEST_ASSERT_FALSE(ancs_request_queue_pop(&queue, &uid));
 }
+
+TEST_CASE("bonded peer admission uses resolved identity", "[ancs_identity]")
+{
+    const ancs_peer_identity_t known = {
+        .type = 0U,
+        .value = {1U, 2U, 3U, 4U, 5U, 6U},
+    };
+    const ancs_peer_identity_t unknown = {
+        .type = 0U,
+        .value = {7U, 2U, 3U, 4U, 5U, 6U},
+    };
+
+    TEST_ASSERT_EQUAL(ANCS_PEER_ADMIT_OPEN_PAIRING,
+                      ancs_peer_admission_decide(NULL, 0U, &unknown));
+    TEST_ASSERT_EQUAL(ANCS_PEER_ADMIT_BONDED,
+                      ancs_peer_admission_decide(&known, 1U, &known));
+    TEST_ASSERT_EQUAL(ANCS_PEER_REJECT_UNKNOWN,
+                      ancs_peer_admission_decide(&known, 1U, &unknown));
+    TEST_ASSERT_EQUAL(ANCS_PEER_ADMIT_OPEN_PAIRING,
+                      ancs_peer_admission_decide(&known, 0U, &unknown));
+}
