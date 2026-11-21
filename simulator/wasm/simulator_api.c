@@ -5,6 +5,7 @@
 
 #include "app_screen.h"
 #include "app_state.h"
+#include "notification.h"
 #include "notification_normalizer.h"
 
 #ifdef __EMSCRIPTEN__
@@ -13,6 +14,19 @@
 #else
 #define SIMULATOR_EXPORT
 #endif
+
+_Static_assert(sizeof(((notification_t *)0)->app_id) ==
+                   SIM_NOTIFICATION_APP_ID_CAPACITY,
+               "core and simulator app-id capacities differ");
+_Static_assert(sizeof(((notification_t *)0)->title) ==
+                   SIM_NOTIFICATION_TITLE_CAPACITY,
+               "core and simulator title capacities differ");
+_Static_assert(sizeof(((notification_t *)0)->subtitle) ==
+                   SIM_NOTIFICATION_SUBTITLE_CAPACITY,
+               "core and simulator subtitle capacities differ");
+_Static_assert(sizeof(((notification_t *)0)->message) ==
+                   SIM_NOTIFICATION_MESSAGE_CAPACITY,
+               "core and simulator message capacities differ");
 
 typedef struct {
     app_state_t app;
@@ -25,6 +39,11 @@ typedef struct {
 
 static simulator_instance_t simulator;
 
+static int32_t require_initialized(void)
+{
+    return simulator.initialized ? SIM_OK : SIM_ERR_NOT_INITIALIZED;
+}
+
 static int32_t validate_timestamp(int64_t now_us)
 {
     if (now_us < 0 || now_us > INT64_MAX - APP_DISPLAY_TIMEOUT_US ||
@@ -36,6 +55,10 @@ static int32_t validate_timestamp(int64_t now_us)
 
 static int32_t reduce_event(const app_event_t *event, int64_t now_us)
 {
+    const int32_t initialized = require_initialized();
+    if (initialized != SIM_OK) {
+        return initialized;
+    }
     const int32_t validation = validate_timestamp(now_us);
     if (validation != SIM_OK) {
         return validation;
@@ -43,6 +66,18 @@ static int32_t reduce_event(const app_event_t *event, int64_t now_us)
     app_state_reduce(&simulator.app, event, now_us);
     simulator.last_now_us = now_us;
     return SIM_OK;
+}
+
+static void copy_notification(simulator_notification_t *destination,
+                              const notification_t *source)
+{
+    destination->uid = source->uid;
+    memcpy(destination->app_id, source->app_id, sizeof(destination->app_id));
+    memcpy(destination->title, source->title, sizeof(destination->title));
+    memcpy(destination->subtitle, source->subtitle,
+           sizeof(destination->subtitle));
+    memcpy(destination->message, source->message,
+           sizeof(destination->message));
 }
 
 static void copy_string(char *destination, size_t capacity,
@@ -84,6 +119,10 @@ SIMULATOR_EXPORT int32_t
 simulator_send_notification(const char *title, const char *subtitle,
                             const char *message, int64_t now_us)
 {
+    const int32_t initialized = require_initialized();
+    if (initialized != SIM_OK) {
+        return initialized;
+    }
     if (title == NULL || subtitle == NULL || message == NULL) {
         return SIM_ERR_NULL_ARGUMENT;
     }
@@ -140,6 +179,10 @@ SIMULATOR_EXPORT int32_t simulator_button_b_up(int64_t now_us)
 SIMULATOR_EXPORT int32_t
 simulator_set_connection(uint8_t connection, int64_t now_us)
 {
+    const int32_t initialized = require_initialized();
+    if (initialized != SIM_OK) {
+        return initialized;
+    }
     if (connection > SIM_CONNECTION_ERROR) {
         return SIM_ERR_INVALID_ARGUMENT;
     }
@@ -153,7 +196,11 @@ simulator_set_connection(uint8_t connection, int64_t now_us)
 SIMULATOR_EXPORT int32_t simulator_set_battery(uint8_t percent,
                                                int64_t now_us)
 {
-    if (percent > 100U) {
+    const int32_t initialized = require_initialized();
+    if (initialized != SIM_OK) {
+        return initialized;
+    }
+    if (percent > 100U && percent != SIM_BATTERY_PERCENT_UNKNOWN) {
         return SIM_ERR_INVALID_ARGUMENT;
     }
     const app_event_t event = {
@@ -165,19 +212,31 @@ SIMULATOR_EXPORT int32_t simulator_set_battery(uint8_t percent,
 
 SIMULATOR_EXPORT int32_t simulator_set_previews_hidden(bool hidden)
 {
+    const int32_t initialized = require_initialized();
+    if (initialized != SIM_OK) {
+        return initialized;
+    }
     simulator.previews_hidden = hidden;
     return SIM_OK;
 }
 
-SIMULATOR_EXPORT uint8_t simulator_take_beep(void)
+SIMULATOR_EXPORT int32_t simulator_take_beep(void)
 {
-    const uint8_t requested = simulator.beep_requested ? 1U : 0U;
+    const int32_t initialized = require_initialized();
+    if (initialized != SIM_OK) {
+        return initialized;
+    }
+    const int32_t requested = simulator.beep_requested ? 1 : 0;
     simulator.beep_requested = false;
     return requested;
 }
 
 SIMULATOR_EXPORT int32_t simulator_snapshot(simulator_snapshot_t *out)
 {
+    const int32_t initialized = require_initialized();
+    if (initialized != SIM_OK) {
+        return initialized;
+    }
     if (out == NULL) {
         return SIM_ERR_NULL_ARGUMENT;
     }
@@ -193,6 +252,6 @@ SIMULATOR_EXPORT int32_t simulator_snapshot(simulator_snapshot_t *out)
     out->display_awake = screen.display_awake ? 1U : 0U;
     out->notification_present = screen.notification_present ? 1U : 0U;
     out->beep_requested = simulator.beep_requested ? 1U : 0U;
-    out->notification = screen.notification;
+    copy_notification(&out->notification, &screen.notification);
     return SIM_OK;
 }

@@ -18,6 +18,25 @@ static void connect_at(int64_t now_us)
                SIM_OK);
 }
 
+static void test_operations_require_reset(void)
+{
+    simulator_snapshot_t state;
+    TEST_CHECK(simulator_snapshot(&state) == SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_snapshot(NULL) == SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_tick(0) == SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_send_notification(NULL, NULL, NULL, 0) ==
+               SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_button_a(0) == SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_button_b_down(0) == SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_button_b_up(0) == SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_set_connection(SIM_CONNECTION_CONNECTED, 0) ==
+               SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_set_battery(50U, 0) == SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_set_previews_hidden(true) ==
+               SIM_ERR_NOT_INITIALIZED);
+    TEST_CHECK(simulator_take_beep() == SIM_ERR_NOT_INITIALIZED);
+}
+
 static void test_reset_version_and_defaults(void)
 {
     TEST_CHECK(simulator_reset(0) == SIM_OK);
@@ -45,17 +64,20 @@ static void test_connection_battery_and_validation(void)
     simulator_snapshot_t state = snapshot();
     TEST_CHECK(state.connection == SIM_CONNECTION_CONNECTED);
     TEST_CHECK(state.battery_percent == 73U);
+    TEST_CHECK(simulator_set_battery(SIM_BATTERY_PERCENT_UNKNOWN, 103) ==
+               SIM_OK);
+    TEST_CHECK(snapshot().battery_percent == SIM_BATTERY_PERCENT_UNKNOWN);
 
     TEST_CHECK(simulator_snapshot(NULL) == SIM_ERR_NULL_ARGUMENT);
-    TEST_CHECK(simulator_set_connection(99U, 103) ==
+    TEST_CHECK(simulator_set_connection(99U, 104) ==
                SIM_ERR_INVALID_ARGUMENT);
-    TEST_CHECK(simulator_set_battery(101U, 103) == SIM_ERR_INVALID_ARGUMENT);
+    TEST_CHECK(simulator_set_battery(101U, 104) == SIM_ERR_INVALID_ARGUMENT);
     TEST_CHECK(simulator_tick(99) == SIM_ERR_INVALID_TIMESTAMP);
     TEST_CHECK(simulator_tick(-1) == SIM_ERR_INVALID_TIMESTAMP);
     TEST_CHECK(simulator_button_a(INT64_MAX) == SIM_ERR_INVALID_TIMESTAMP);
     state = snapshot();
     TEST_CHECK(state.connection == SIM_CONNECTION_CONNECTED);
-    TEST_CHECK(state.battery_percent == 73U);
+    TEST_CHECK(state.battery_percent == SIM_BATTERY_PERCENT_UNKNOWN);
 }
 
 static void test_notification_normalization_and_beep(void)
@@ -102,13 +124,71 @@ static void test_overlong_utf8_is_safely_truncated(void)
     TEST_CHECK(simulator_send_notification(long_text, long_text, long_text, 2) ==
                SIM_OK);
     const simulator_snapshot_t state = snapshot();
-    TEST_CHECK(state.notification.title[NOTIFICATION_TITLE_MAX - 1U] == '\0');
-    TEST_CHECK(state.notification.subtitle[NOTIFICATION_SUBTITLE_MAX - 1U] ==
+    TEST_CHECK(state.notification.title[SIM_NOTIFICATION_TITLE_CAPACITY - 1U] ==
                '\0');
-    TEST_CHECK(state.notification.message[NOTIFICATION_MESSAGE_MAX - 1U] ==
-               '\0');
+    TEST_CHECK(state.notification
+                   .subtitle[SIM_NOTIFICATION_SUBTITLE_CAPACITY - 1U] == '\0');
+    TEST_CHECK(state.notification
+                   .message[SIM_NOTIFICATION_MESSAGE_CAPACITY - 1U] == '\0');
     TEST_CHECK(strlen(state.notification.title) == 94U);
     TEST_CHECK(strlen(state.notification.message) == 254U);
+}
+
+static void test_multibyte_utf8_truncation_boundaries(void)
+{
+    char valid_three_byte[128] = "AB";
+    char partial_three_byte[128] = "A";
+    char valid_four_byte[128] = "A- ";
+    char partial_four_byte[128] = "A";
+    size_t valid_three_length = 2U;
+    size_t partial_three_length = 1U;
+    size_t valid_four_length = 3U;
+    size_t partial_four_length = 1U;
+
+    for (size_t index = 0U; index < 31U; ++index) {
+        memcpy(&valid_three_byte[valid_three_length], "\xE2\x80\x94", 3U);
+        valid_three_length += 3U;
+        memcpy(&partial_three_byte[partial_three_length], "\xE2\x80\x94", 3U);
+        partial_three_length += 3U;
+    }
+    memcpy(&partial_three_byte[partial_three_length], "\xE2\x80\x94", 3U);
+    partial_three_length += 3U;
+    valid_three_byte[valid_three_length] = '\0';
+    partial_three_byte[partial_three_length] = '\0';
+
+    for (size_t index = 0U; index < 23U; ++index) {
+        memcpy(&valid_four_byte[valid_four_length], "\xF0\x9F\x91\x8B", 4U);
+        valid_four_length += 4U;
+        memcpy(&partial_four_byte[partial_four_length], "\xF0\x9F\x91\x8B", 4U);
+        partial_four_length += 4U;
+    }
+    memcpy(&partial_four_byte[partial_four_length], "\xF0\x9F\x91\x8B", 4U);
+    partial_four_length += 4U;
+    valid_four_byte[valid_four_length] = '\0';
+    partial_four_byte[partial_four_length] = '\0';
+
+    TEST_CHECK(simulator_reset(0) == SIM_OK);
+    connect_at(1);
+    TEST_CHECK(simulator_send_notification(valid_three_byte, "", "", 2) ==
+               SIM_OK);
+    simulator_snapshot_t state = snapshot();
+    TEST_CHECK(strlen(state.notification.title) == 95U);
+    TEST_CHECK(memcmp(&state.notification.title[92], "\xE2\x80\x94", 3U) ==
+               0);
+
+    TEST_CHECK(simulator_send_notification(partial_three_byte, "", "", 3) ==
+               SIM_OK);
+    state = snapshot();
+    TEST_CHECK(strlen(state.notification.title) == 94U);
+    TEST_CHECK(memcmp(&state.notification.title[91], "\xE2\x80\x94", 3U) ==
+               0);
+
+    TEST_CHECK(simulator_send_notification(valid_four_byte, "", "", 4) ==
+               SIM_OK);
+    TEST_CHECK(strcmp(snapshot().notification.title, "A-") == 0);
+    TEST_CHECK(simulator_send_notification(partial_four_byte, "", "", 5) ==
+               SIM_OK);
+    TEST_CHECK(strcmp(snapshot().notification.title, "A") == 0);
 }
 
 static void test_disconnected_and_hidden_previews(void)
@@ -191,10 +271,12 @@ static void test_timeout_and_long_hold(void)
 
 int main(void)
 {
+    test_operations_require_reset();
     test_reset_version_and_defaults();
     test_connection_battery_and_validation();
     test_notification_normalization_and_beep();
     test_overlong_utf8_is_safely_truncated();
+    test_multibyte_utf8_truncation_boundaries();
     test_disconnected_and_hidden_previews();
     test_eviction_and_button_ordering();
     test_timeout_and_long_hold();
