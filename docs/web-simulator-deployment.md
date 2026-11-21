@@ -116,3 +116,24 @@ curl -fsS https://les13.tech/mk3k-esp32-preview/ \
 
 Ожидаются `200`, `Content-Type: application/wasm`, заголовок
 `X-Robots-Tag: noindex, nofollow` и HTML-маркеры интерфейса.
+
+## Проверенный публичный деплой 2026-11-21
+
+- URL: `https://les13.tech/mk3k-esp32-preview/`.
+- Активный release: `20261121T114500Z-0618b23d845a`.
+- Предыдущий release: `20261121T114303Z-0618b23d845a`.
+- SHA256 опубликованного WASM:
+  `f0833f309536e488020e15e9b6f16b2caa1981e634eed7efe331fad084cc2b21`.
+- Исходный nginx-файл сохранён вне `sites-enabled` в
+  `/var/backups/nginx/les13.tech.conf.20261121T1144Z.bak`.
+- `nginx -t` и reload прошли. Старое предупреждение о конфликтующем
+  `server_name` осталось без изменений; посторонняя backup-ссылка не менялась.
+- Проверены redirect `301`, HTML `200`, WASM `200` с
+  `Content-Type: application/wasm`, а также `noindex`, `no-cache` и `nosniff`.
+- В браузере проверены кириллическое уведомление, очередь из пяти после серии
+  из шести, навигация A/B и состояние «Нет связи».
+- В мобильном viewport 390 px нет горизонтального overflow; интерактивные
+  кнопки A/B и основные поля имеют высоту не менее 44 px.
+- Выполнен rollback со второго release на первый, проверен тот же SHA256, затем
+  повторным rollback восстановлен второй release. Пара `current`/`previous`
+  осталась готова к следующему аварийному откату.
