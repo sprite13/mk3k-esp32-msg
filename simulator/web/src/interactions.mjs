@@ -1,5 +1,6 @@
-export function bindDeviceButtons({ buttonA, buttonB, onA, onBDown, onBUp }) {
-  buttonA.addEventListener('click', onA);
+export function bindDeviceButtons({ buttonA, buttonB, onA, onBDown, onBUp, signal }) {
+  const options = signal === undefined ? undefined : { signal };
+  buttonA.addEventListener('click', onA, options);
   let bIsDown = false;
   const press = (event) => {
     if (bIsDown) return;
@@ -16,14 +17,14 @@ export function bindDeviceButtons({ buttonA, buttonB, onA, onBDown, onBUp }) {
     buttonB.classList.remove('is-pressed');
     onBUp();
   };
-  buttonB.addEventListener('pointerdown', press);
-  buttonB.addEventListener('pointerup', release);
-  buttonB.addEventListener('pointercancel', release);
-  buttonB.addEventListener('lostpointercapture', release);
+  buttonB.addEventListener('pointerdown', press, options);
+  buttonB.addEventListener('pointerup', release, options);
+  buttonB.addEventListener('pointercancel', release, options);
+  buttonB.addEventListener('lostpointercapture', release, options);
   buttonB.addEventListener('keydown', (event) => {
     if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) press(event);
-  });
+  }, options);
   buttonB.addEventListener('keyup', (event) => {
     if (event.key === ' ' || event.key === 'Enter') release();
-  });
+  }, options);
 }

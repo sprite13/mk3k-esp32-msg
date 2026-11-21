@@ -28,6 +28,7 @@
       </div>
       <p id="device-hint" class="device-hint">A — старее · B — новее · экран гаснет через 10 секунд</p>
       <p id="runtime-status" class="runtime-status" role="status">Загрузка WebAssembly…</p>
+      <button id="retry-start" class="retry-start" type="button" hidden>Повторить загрузку</button>
     </section>
 
     <section class="controls-panel" aria-label="Управление симулятором">
@@ -55,16 +56,11 @@
             <option value="3">Ошибка</option>
           </select>
         </label>
-        <label>Заряд батареи
-          <select id="battery">
-            <option value="255">Неизвестно</option>
-            <option value="100">100%</option>
-            <option value="75" selected>75%</option>
-            <option value="50">50%</option>
-            <option value="15">15% — низкий</option>
-            <option value="5">5% — критический</option>
-          </select>
+        <label>Заряд батареи: <output id="battery-value" for="battery">75%</output>
+          <input id="battery" type="range" min="0" max="100" step="1" value="75">
         </label>
+        <label class="check-row"><input id="battery-unknown" type="checkbox">
+          Заряд неизвестен</label>
         <label class="check-row"><input id="previews-hidden" type="checkbox">
           Скрытые previews</label>
         <label class="check-row"><input id="audio-enabled" type="checkbox">

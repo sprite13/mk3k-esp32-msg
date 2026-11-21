@@ -24,4 +24,13 @@ export class BeepAudio {
     oscillator.start(now);
     oscillator.stop(now + 0.06);
   }
+
+  async dispose() {
+    this.#enabled = false;
+    if (this.#context) {
+      const context = this.#context;
+      this.#context = null;
+      await context.close();
+    }
+  }
 }

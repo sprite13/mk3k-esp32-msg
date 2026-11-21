@@ -32,7 +32,8 @@ test('page declares the complete accessible simulator controls', async () => {
   assert.match(html, /name="robots" content="noindex,nofollow"/);
   assert.match(html, /<canvas[^>]+id="device-screen"[^>]+width="135"[^>]+height="240"/s);
   for (const id of ['button-a', 'button-b', 'notification-form', 'connection',
-    'battery', 'previews-hidden', 'audio-enabled', 'reset-simulator']) {
+    'battery', 'battery-value', 'battery-unknown', 'previews-hidden',
+    'audio-enabled', 'reset-simulator', 'retry-start']) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   for (const name of ['title', 'subtitle', 'message']) {
@@ -41,6 +42,8 @@ test('page declares the complete accessible simulator controls', async () => {
   assert.match(html, /не эмулирует BLE\/ANCS/i);
   assert.match(html, /расход батареи/i);
   assert.match(html, /<script type="module" src="\.\/src\/app\.mjs"><\/script>/);
+  assert.match(html, /id="battery"[^>]+type="range"[^>]+min="0"[^>]+max="100"/);
+  assert.match(html, /id="retry-start"[^>]+hidden/);
   assert.doesNotMatch(html, /(?:src|href)="\//);
   assert.doesNotMatch(html, /https?:\/\//);
 });
