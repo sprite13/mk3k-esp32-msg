@@ -1,14 +1,32 @@
 export class BeepAudio {
   #enabled = false;
   #context = null;
+  #AudioContextClass;
+
+  constructor({ AudioContextClass = globalThis.AudioContext ?? globalThis.webkitAudioContext } = {}) {
+    this.#AudioContextClass = AudioContextClass;
+  }
+
+  get enabled() { return this.#enabled; }
 
   async setEnabled(enabled) {
-    this.#enabled = Boolean(enabled);
-    if (this.#enabled) {
-      const AudioContextClass = globalThis.AudioContext ?? globalThis.webkitAudioContext;
-      if (!AudioContextClass) throw new Error('Web Audio API недоступен');
-      this.#context ??= new AudioContextClass();
+    if (!enabled) {
+      this.#enabled = false;
+      return;
+    }
+    if (!this.#AudioContextClass) throw new Error('Web Audio API недоступен');
+    try {
+      this.#context ??= new this.#AudioContextClass();
       await this.#context.resume();
+      this.#enabled = true;
+    } catch (error) {
+      this.#enabled = false;
+      const context = this.#context;
+      this.#context = null;
+      if (context) {
+        try { await context.close(); } catch { /* original error is authoritative */ }
+      }
+      throw error;
     }
   }
 

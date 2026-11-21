@@ -4,6 +4,8 @@ import test from 'node:test';
 import { readBatteryControl } from '../src/controls.mjs';
 import { createFrameScheduler } from '../src/frame-scheduler.mjs';
 import { createStartupController } from '../src/startup-controller.mjs';
+import { abortableDelay, createScenarioController } from '../src/scenario-controller.mjs';
+import { describeSnapshot } from '../src/accessibility.mjs';
 
 test('battery control covers 0, 42, 100 and explicit unknown', () => {
   const range = { value: '0' };
@@ -71,4 +73,50 @@ test('failed startup exposes failed state and retry can reach running', async ()
     ['loading', undefined], ['failed', 'WASM не загрузился'],
     ['loading', undefined], ['running', undefined],
   ]);
+});
+
+test('new scenario aborts stale delayed recovery before it can overwrite state', async () => {
+  const states = [];
+  const active = [];
+  const controller = createScenarioController({
+    onActive: (value) => active.push(value),
+    run: async (scenario, signal) => {
+      states.push(scenario.start);
+      if (scenario.delay) await abortableDelay(scenario.delay, signal);
+      if (!signal.aborted && scenario.finish) states.push(scenario.finish);
+    },
+  });
+  const stale = controller.start({ start: 'lost', delay: 1000, finish: 'recovered' });
+  const latest = controller.start({ start: 'manual-connected' });
+  assert.equal(await stale, false);
+  assert.equal(await latest, true);
+  assert.deepEqual(states, ['lost', 'manual-connected']);
+  assert.deepEqual(active, [true, true, false]);
+});
+
+test('manual cancel prevents a pending scenario from completing', async () => {
+  const states = [];
+  const controller = createScenarioController({
+    onActive: () => {},
+    run: async (_, signal) => {
+      states.push('started');
+      await abortableDelay(1000, signal);
+      states.push('stale');
+    },
+  });
+  const pending = controller.start({});
+  controller.cancel();
+  assert.equal(await pending, false);
+  assert.deepEqual(states, ['started']);
+});
+
+test('accessible model reports actual snapshot without inventing hidden content', () => {
+  assert.equal(describeSnapshot({ connection: 1, batteryPercent: 42, position: 1,
+    total: 2, displayAwake: true, notificationPresent: true,
+    notification: { title: 'Алиса', message: 'Привет' } }),
+  'Подключено. Батарея 42%. Уведомление 1 из 2. Экран включён. Алиса. Привет.');
+  const hidden = describeSnapshot({ connection: 1, batteryPercent: 255, position: 1,
+    total: 1, displayAwake: true, notificationPresent: true,
+    notification: { title: '', message: '' } });
+  assert.equal(hidden, 'Подключено. Заряд неизвестен. Уведомление 1 из 1. Экран включён. Содержимое скрыто.');
 });

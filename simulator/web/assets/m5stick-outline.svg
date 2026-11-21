@@ -1,12 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 270 458" role="img" aria-label="Корпус M5StickC Plus2">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 458 270" role="img" aria-label="Корпус M5StickC Plus2 в альбомной ориентации">
   <defs>
     <linearGradient id="case" x1="0" x2="1" y1="0" y2="1">
       <stop stop-color="#444b54"/><stop offset=".45" stop-color="#171b20"/><stop offset="1" stop-color="#07090c"/>
     </linearGradient>
   </defs>
-  <rect x="9" y="5" width="244" height="444" rx="31" fill="url(#case)" stroke="#68717c" stroke-width="4"/>
-  <rect x="40" y="42" width="180" height="338" rx="8" fill="#020304" stroke="#4a525c" stroke-width="3"/>
-  <circle cx="135" cy="420" r="22" fill="#bfc5cb" stroke="#5d646c" stroke-width="4"/>
-  <rect x="249" y="102" width="15" height="68" rx="6" fill="#aeb4bb" stroke="#545b63" stroke-width="3"/>
-  <text x="135" y="27" text-anchor="middle" fill="#d2d6da" font-family="sans-serif" font-size="12">M5StickC PLUS2</text>
+  <rect x="5" y="17" width="444" height="244" rx="31" fill="url(#case)" stroke="#68717c" stroke-width="4"/>
+  <rect x="45" y="40" width="338" height="190" rx="8" fill="#020304" stroke="#4a525c" stroke-width="3"/>
+  <circle cx="420" cy="135" r="22" fill="#bfc5cb" stroke="#5d646c" stroke-width="4"/>
+  <rect x="102" y="249" width="68" height="15" rx="6" fill="#aeb4bb" stroke="#545b63" stroke-width="3"/>
+  <text x="229" y="31" text-anchor="middle" fill="#d2d6da" font-family="sans-serif" font-size="12">M5StickC PLUS2</text>
 </svg>

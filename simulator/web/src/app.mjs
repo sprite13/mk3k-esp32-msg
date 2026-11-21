@@ -1,14 +1,15 @@
 import { BeepAudio } from './audio.mjs';
+import { describeSnapshot } from './accessibility.mjs';
 import { readBatteryControl, updateBatteryPresentation } from './controls.mjs';
 import { renderDeviceScreen } from './device-renderer.mjs';
 import { createFrameScheduler } from './frame-scheduler.mjs';
 import { bindDeviceButtons } from './interactions.mjs';
 import { UI_SCENARIOS } from './scenarios.mjs';
+import { abortableDelay, createScenarioController } from './scenario-controller.mjs';
 import { createStartupController } from './startup-controller.mjs';
 import { loadWasmClient } from './wasm-client.mjs';
 
 const nowUs = () => BigInt(Math.trunc(performance.now() * 1000));
-const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const element = (selector) => document.querySelector(selector);
 
 async function startRuntime(signal) {
@@ -21,6 +22,7 @@ async function startRuntime(signal) {
   const previews = element('#previews-hidden');
   const audioEnabled = element('#audio-enabled');
   const status = element('#runtime-status');
+  const screenReaderStatus = element('#screen-reader-status');
   const reset = element('#reset-simulator');
   const client = await loadWasmClient();
   if (signal.aborted) return;
@@ -52,6 +54,7 @@ async function startRuntime(signal) {
     if (client.takeBeep()) audio.play();
     const snapshot = client.snapshot();
     const plan = client.displayPlan();
+    screenReaderStatus.textContent = describeSnapshot(snapshot);
     const signature = JSON.stringify([snapshot, plan]);
     if (signature !== lastFrame) {
       frames.schedule({ snapshot, plan });
@@ -63,7 +66,38 @@ async function startRuntime(signal) {
     updateBatteryPresentation(battery, batteryUnknown, batteryValue);
     client.setBattery(readBatteryControl(battery, batteryUnknown), nowUs());
   };
-  const resetState = () => {
+  const scenarioButtons = Array.from(document.querySelectorAll('[data-scenario]'));
+  const scenarioController = createScenarioController({
+    onActive(active) {
+      scenarioButtons.forEach((button) => button.classList.toggle('scenario-running', active));
+    },
+    async run(scenario, scenarioSignal) {
+      client.reset(nowUs());
+      client.setBattery(readBatteryControl(battery, batteryUnknown), nowUs());
+      for (const action of scenario.actions) {
+        if (action.type === 'wait') {
+          await abortableDelay(action.milliseconds, scenarioSignal);
+        } else if (action.type === 'connect') {
+          connection.value = String(action.connection);
+          client.setConnection(action.connection, nowUs());
+        } else if (action.type === 'previews') {
+          previews.checked = action.hidden;
+          client.setPreviewsHidden(action.hidden);
+        } else if (action.type === 'notify') {
+          client.sendNotification(action, nowUs());
+        }
+        refresh();
+      }
+      setStatus(`Сценарий: ${scenario.label}`);
+    },
+  });
+  signal.addEventListener('abort', () => scenarioController.cancel(), { once: true });
+  const manual = (operation) => {
+    scenarioController.cancel();
+    return perform(operation);
+  };
+  const resetState = (cancelScenario = true) => {
+    if (cancelScenario) scenarioController.cancel();
     const at = nowUs();
     client.reset(at);
     client.setConnection(Number(connection.value), at);
@@ -78,36 +112,36 @@ async function startRuntime(signal) {
     buttonA: element('#button-a'),
     buttonB: element('#button-b'),
     signal,
-    onA: () => perform(() => { client.buttonA(nowUs()); refresh(); }),
-    onBDown: () => perform(() => { client.buttonBDown(nowUs()); refresh(); }),
-    onBUp: () => perform(() => { client.buttonBUp(nowUs()); refresh(); }),
+    onA: () => manual(() => { client.buttonA(nowUs()); refresh(); }),
+    onBDown: () => manual(() => { client.buttonBDown(nowUs()); refresh(); }),
+    onBUp: () => manual(() => { client.buttonBUp(nowUs()); refresh(); }),
   });
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     const data = new FormData(form);
-    if (perform(() => {
+    if (manual(() => {
       client.sendNotification({
         title: data.get('title'), subtitle: data.get('subtitle'), message: data.get('message'),
       }, nowUs());
       refresh();
     })) setStatus('Уведомление добавлено');
   }, listenerOptions);
-  connection.addEventListener('change', () => perform(() => {
+  connection.addEventListener('change', () => manual(() => {
     client.setConnection(Number(connection.value), nowUs());
     refresh();
   }), listenerOptions);
-  battery.addEventListener('input', () => perform(() => {
+  battery.addEventListener('input', () => manual(() => {
     updateBatteryPresentation(battery, batteryUnknown, batteryValue);
     if (!batteryUnknown.checked) {
       client.setBattery(readBatteryControl(battery, batteryUnknown), nowUs());
       refresh();
     }
   }), listenerOptions);
-  batteryUnknown.addEventListener('change', () => perform(() => {
+  batteryUnknown.addEventListener('change', () => manual(() => {
     applyBattery();
     refresh();
   }), listenerOptions);
-  previews.addEventListener('change', () => perform(() =>
+  previews.addEventListener('change', () => manual(() =>
     client.setPreviewsHidden(previews.checked)), listenerOptions);
   audioEnabled.addEventListener('change', async () => {
     try {
@@ -118,42 +152,18 @@ async function startRuntime(signal) {
       setStatus(error.message, true);
     }
   }, listenerOptions);
-  reset.addEventListener('click', () => perform(resetState), listenerOptions);
+  reset.addEventListener('click', () => manual(() => resetState(false)), listenerOptions);
 
-  for (const button of document.querySelectorAll('[data-scenario]')) {
-    button.addEventListener('click', async () => {
+  for (const button of scenarioButtons) {
+    button.addEventListener('click', () => {
       const scenario = UI_SCENARIOS[button.dataset.scenario];
       if (!scenario) return;
-      button.disabled = true;
-      try {
-        client.reset(nowUs());
-        client.setBattery(readBatteryControl(battery, batteryUnknown), nowUs());
-        for (const action of scenario.actions) {
-          if (signal.aborted) return;
-          if (action.type === 'wait') {
-            await sleep(action.milliseconds);
-          } else if (action.type === 'connect') {
-            connection.value = String(action.connection);
-            client.setConnection(action.connection, nowUs());
-          } else if (action.type === 'previews') {
-            previews.checked = action.hidden;
-            client.setPreviewsHidden(action.hidden);
-          } else if (action.type === 'notify') {
-            client.sendNotification(action, nowUs());
-          }
-          refresh();
-        }
-        setStatus(`Сценарий: ${scenario.label}`);
-      } catch (error) {
-        setStatus(error.message, true);
-      } finally {
-        button.disabled = false;
-      }
+      void scenarioController.start(scenario).catch((error) => setStatus(error.message, true));
     }, listenerOptions);
   }
 
   updateBatteryPresentation(battery, batteryUnknown, batteryValue);
-  resetState();
+  resetState(false);
   const timer = setInterval(() => perform(() => {
     client.tick(nowUs());
     refresh();

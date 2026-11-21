@@ -9,6 +9,14 @@ export const COLORS = Object.freeze({
   error: '#ff5c5c',
 });
 
+export const DISPLAY_GEOMETRY = Object.freeze({
+  canvasWidth: 135,
+  canvasHeight: 240,
+  framebufferWidth: 240,
+  framebufferHeight: 135,
+  cssRotationDegrees: -90,
+});
+
 const FONT_WIDTH = 12;
 const FONT_HEIGHT = 20;
 const TOP_MARGIN = 7;

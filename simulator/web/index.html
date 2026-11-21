@@ -19,8 +19,9 @@
     <section class="device-panel" aria-label="Виртуальный M5StickC Plus2">
       <div class="device" aria-describedby="device-hint">
         <img class="device-outline" src="./assets/m5stick-outline.svg" alt="" aria-hidden="true">
-        <canvas id="device-screen" width="135" height="240"
-          aria-label="Экран виртуального M5StickC Plus2"></canvas>
+        <div class="screen-window">
+          <canvas id="device-screen" width="135" height="240" aria-hidden="true"></canvas>
+        </div>
         <button id="button-a" class="device-button button-a" type="button"
           aria-label="Кнопка A: более старое уведомление">A</button>
         <button id="button-b" class="device-button button-b" type="button"
@@ -28,6 +29,7 @@
       </div>
       <p id="device-hint" class="device-hint">A — старее · B — новее · экран гаснет через 10 секунд</p>
       <p id="runtime-status" class="runtime-status" role="status">Загрузка WebAssembly…</p>
+      <p id="screen-reader-status" class="visually-hidden" aria-live="polite"></p>
       <button id="retry-start" class="retry-start" type="button" hidden>Повторить загрузку</button>
     </section>
 
