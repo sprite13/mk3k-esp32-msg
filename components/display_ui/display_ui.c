@@ -269,7 +269,8 @@ void display_ui_render(const display_ui_model_t *model)
 
     display_render_plan_make(display_connection(model->connection),
                              model->battery_percent, model->position, model->total,
-                             model->notification, &s_plan);
+                             model->notification, model->bond_reset_progress_visible,
+                             model->bond_reset_progress_percent, &s_plan);
     esp_err_t err = fill_margin(0, DISPLAY_TOP_MARGIN);
     for (size_t row = 0U; err == ESP_OK && row < DISPLAY_LAYOUT_MAX_LINES; ++row) {
         err = draw_line(row, &s_plan.lines[row], model->connection);

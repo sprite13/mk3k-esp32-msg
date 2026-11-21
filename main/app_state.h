@@ -48,6 +48,8 @@ typedef struct {
     bool notification_accepted;
     bool button_b_is_down;
     bool button_b_long_handled;
+    bool bond_reset_progress_visible;
+    uint8_t bond_reset_progress_percent;
     int64_t display_deadline_us;
     int64_t button_b_down_us;
 } app_state_t;

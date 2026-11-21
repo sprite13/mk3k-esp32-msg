@@ -30,11 +30,17 @@ static void evaluate_deadlines(app_state_t *state, int64_t now_us)
     }
 
     if (state->button_b_is_down && !state->button_b_long_handled &&
-        now_us >= state->button_b_down_us &&
-        now_us - state->button_b_down_us >= APP_BUTTON_B_LONG_HOLD_US) {
-        state->button_b_long_handled = true;
-        state->forget_bond_requested = true;
-        wake_display(state, now_us);
+        now_us >= state->button_b_down_us) {
+        const int64_t elapsed_us = now_us - state->button_b_down_us;
+        if (elapsed_us >= APP_BUTTON_B_LONG_HOLD_US) {
+            state->bond_reset_progress_percent = 100U;
+            state->button_b_long_handled = true;
+            state->forget_bond_requested = true;
+            wake_display(state, now_us);
+        } else {
+            state->bond_reset_progress_percent = (uint8_t)(
+                (elapsed_us * 100) / APP_BUTTON_B_LONG_HOLD_US);
+        }
     }
 }
 
@@ -47,6 +53,8 @@ void app_state_init(app_state_t *state)
     state->notification_accepted = false;
     state->button_b_is_down = false;
     state->button_b_long_handled = false;
+    state->bond_reset_progress_visible = false;
+    state->bond_reset_progress_percent = 0U;
     state->display_deadline_us = 0;
     state->button_b_down_us = 0;
 }
@@ -81,6 +89,8 @@ void app_state_reduce(app_state_t *state, const app_event_t *event,
         if (!state->button_b_is_down) {
             state->button_b_is_down = true;
             state->button_b_long_handled = false;
+            state->bond_reset_progress_visible = true;
+            state->bond_reset_progress_percent = 0U;
             state->button_b_down_us = now_us;
             wake_display(state, now_us);
         }
@@ -88,6 +98,8 @@ void app_state_reduce(app_state_t *state, const app_event_t *event,
     case APP_EVENT_BUTTON_B_UP:
         if (state->button_b_is_down && !state->button_b_long_handled) {
             (void)notification_queue_newer(&state->queue);
+            state->bond_reset_progress_visible = false;
+            state->bond_reset_progress_percent = 0U;
             wake_display(state, now_us);
         }
         state->button_b_is_down = false;
@@ -100,6 +112,11 @@ void app_state_reduce(app_state_t *state, const app_event_t *event,
         if (event->data.connection >= APP_CONNECTION_PAIRING &&
             event->data.connection <= APP_CONNECTION_ERROR) {
             state->connection = event->data.connection;
+            if (state->connection == APP_CONNECTION_PAIRING &&
+                state->bond_reset_progress_percent >= 100U) {
+                state->bond_reset_progress_visible = false;
+                state->bond_reset_progress_percent = 0U;
+            }
             wake_display(state, now_us);
         }
         break;

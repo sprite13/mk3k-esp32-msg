@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,6 +15,8 @@ typedef struct {
     size_t position;
     size_t total;
     const notification_t *notification;
+    bool bond_reset_progress_visible;
+    uint8_t bond_reset_progress_percent; /* Clamped to 0..100 by layout. */
 } display_ui_model_t;
 
 esp_err_t display_ui_init(void);

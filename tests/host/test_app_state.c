@@ -86,6 +86,7 @@ static void test_long_b_requests_bond_reset_once_per_hold(void)
     app_state_reduce(&state, &event, 0U);
 
     reduce_type(&state, APP_EVENT_BUTTON_B_DOWN, 100U);
+    TEST_CHECK(state.bond_reset_progress_visible);
     reduce_type(&state, APP_EVENT_TIMER,
                 100U + APP_BUTTON_B_LONG_HOLD_US - 1U);
     TEST_CHECK(!state.forget_bond_requested);
@@ -108,6 +109,85 @@ static void test_long_b_requests_bond_reset_once_per_hold(void)
     reduce_type(&state, APP_EVENT_TIMER,
                 7000000U + APP_BUTTON_B_LONG_HOLD_US);
     TEST_CHECK(app_state_take_forget_bond_request(&state));
+}
+
+static void test_b_hold_progress_milestones(void)
+{
+    app_state_t state;
+    app_state_init(&state);
+
+    reduce_type(&state, APP_EVENT_BUTTON_B_DOWN, 100U);
+    TEST_CHECK(state.bond_reset_progress_percent == 0U);
+    reduce_type(&state, APP_EVENT_TIMER, 100U + 1000000U);
+    TEST_CHECK(state.bond_reset_progress_percent == 20U);
+    reduce_type(&state, APP_EVENT_TIMER, 100U + 2500000U);
+    TEST_CHECK(state.bond_reset_progress_percent == 50U);
+    reduce_type(&state, APP_EVENT_TIMER,
+                100U + APP_BUTTON_B_LONG_HOLD_US - 1U);
+    TEST_CHECK(state.bond_reset_progress_percent == 99U);
+    TEST_CHECK(!state.forget_bond_requested);
+    reduce_type(&state, APP_EVENT_TIMER,
+                100U + APP_BUTTON_B_LONG_HOLD_US);
+    TEST_CHECK(state.bond_reset_progress_percent == 100U);
+    TEST_CHECK(app_state_take_forget_bond_request(&state));
+
+    reduce_type(&state, APP_EVENT_TIMER,
+                100U + APP_BUTTON_B_LONG_HOLD_US + 1000000U);
+    TEST_CHECK(state.bond_reset_progress_percent == 100U);
+    TEST_CHECK(!app_state_take_forget_bond_request(&state));
+}
+
+static void test_early_b_release_resets_progress_and_navigates_once(void)
+{
+    app_state_t state;
+    app_state_init(&state);
+    for (uint32_t uid = 1U; uid <= 3U; ++uid) {
+        app_event_t event = notification_event(
+            notification(uid, TELEGRAM_IOS_BUNDLE_ID, "message"));
+        app_state_reduce(&state, &event, (int64_t)uid);
+    }
+    reduce_type(&state, APP_EVENT_BUTTON_A, 10U);
+    TEST_CHECK(notification_queue_current(&state.queue)->uid == 2U);
+
+    reduce_type(&state, APP_EVENT_BUTTON_B_DOWN, 100U);
+    reduce_type(&state, APP_EVENT_TIMER, 2000100U);
+    TEST_CHECK(state.bond_reset_progress_percent == 40U);
+    reduce_type(&state, APP_EVENT_BUTTON_B_UP, 2000101U);
+    TEST_CHECK(!state.bond_reset_progress_visible);
+    TEST_CHECK(state.bond_reset_progress_percent == 0U);
+    TEST_CHECK(notification_queue_current(&state.queue)->uid == 3U);
+
+    reduce_type(&state, APP_EVENT_BUTTON_B_UP, 2000102U);
+    TEST_CHECK(notification_queue_current(&state.queue)->uid == 3U);
+    TEST_CHECK(!state.forget_bond_requested);
+}
+
+static void test_release_at_threshold_keeps_completion_until_pairing(void)
+{
+    app_state_t state;
+    app_state_init(&state);
+
+    reduce_type(&state, APP_EVENT_BUTTON_B_DOWN, 100U);
+    reduce_type(&state, APP_EVENT_BUTTON_B_UP,
+                100U + APP_BUTTON_B_LONG_HOLD_US);
+    TEST_CHECK(!state.button_b_is_down);
+    TEST_CHECK(state.bond_reset_progress_visible);
+    TEST_CHECK(state.bond_reset_progress_percent == 100U);
+    TEST_CHECK(app_state_take_forget_bond_request(&state));
+
+    reduce_type(&state, APP_EVENT_BUTTON_B_UP,
+                100U + APP_BUTTON_B_LONG_HOLD_US + 1U);
+    TEST_CHECK(!app_state_take_forget_bond_request(&state));
+    TEST_CHECK(state.bond_reset_progress_visible);
+
+    const app_event_t pairing = {
+        .type = APP_EVENT_CONNECTION_STATE,
+        .data.connection = APP_CONNECTION_PAIRING,
+    };
+    app_state_reduce(&state, &pairing,
+                     100U + APP_BUTTON_B_LONG_HOLD_US + 2U);
+    TEST_CHECK(!state.bond_reset_progress_visible);
+    TEST_CHECK(state.bond_reset_progress_percent == 0U);
 }
 
 static void test_display_deadline_and_delayed_processing(void)
@@ -168,6 +248,9 @@ int main(void)
     test_filters_and_normalizes_notifications();
     test_newest_selection_and_button_navigation();
     test_long_b_requests_bond_reset_once_per_hold();
+    test_b_hold_progress_milestones();
+    test_early_b_release_resets_progress_and_navigates_once();
+    test_release_at_threshold_keeps_completion_until_pairing();
     test_display_deadline_and_delayed_processing();
     test_connection_state();
     test_battery_voltage_mapping();

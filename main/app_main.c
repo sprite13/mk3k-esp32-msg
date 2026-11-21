@@ -21,6 +21,7 @@ enum {
     APP_BUTTON_POLL_MS = 20,
     APP_NOTIFICATION_BEEP_HZ = 2200,
     APP_NOTIFICATION_BEEP_MS = 50,
+    APP_BOND_PROGRESS_RENDER_STEP_PERCENT = 10,
     APP_NO_PENDING_CONNECTION = -1,
 };
 
@@ -109,6 +110,8 @@ static void render_state(const app_state_t *state)
         .position = total == 0U ? 0U : state->queue.selected_offset + 1U,
         .total = total,
         .notification = notification_queue_current(&state->queue),
+        .bond_reset_progress_visible = state->bond_reset_progress_visible,
+        .bond_reset_progress_percent = state->bond_reset_progress_percent,
     };
     display_ui_render(&model);
     board_backlight_set(true);
@@ -116,7 +119,8 @@ static void render_state(const app_state_t *state)
 
 static bool event_should_render(const app_event_t *event,
                                 const app_state_t *state,
-                                bool forget_bond_requested)
+                                bool forget_bond_requested,
+                                uint8_t previous_progress_percent)
 {
     switch (event->type) {
     case APP_EVENT_NOTIFICATION:
@@ -127,7 +131,12 @@ static bool event_should_render(const app_event_t *event,
     case APP_EVENT_CONNECTION_STATE:
         return true;
     case APP_EVENT_TIMER:
-        return forget_bond_requested;
+        return forget_bond_requested ||
+               (state->bond_reset_progress_visible &&
+                previous_progress_percent /
+                        APP_BOND_PROGRESS_RENDER_STEP_PERCENT !=
+                    state->bond_reset_progress_percent /
+                        APP_BOND_PROGRESS_RENDER_STEP_PERCENT);
     }
     return false;
 }
@@ -136,6 +145,8 @@ static void apply_event(app_state_t *state, const app_event_t *event,
                         int64_t now_us)
 {
     const bool was_awake = state->display_awake;
+    const uint8_t previous_progress_percent =
+        state->bond_reset_progress_percent;
     app_state_reduce(state, event, now_us);
     const bool forget_bond_requested =
         app_state_take_forget_bond_request(state);
@@ -145,7 +156,8 @@ static void apply_event(app_state_t *state, const app_event_t *event,
         display_ui_sleep();
     }
     if (state->display_awake &&
-        event_should_render(event, state, forget_bond_requested)) {
+        event_should_render(event, state, forget_bond_requested,
+                            previous_progress_percent)) {
         render_state(state);
     }
     if (state->notification_accepted) {

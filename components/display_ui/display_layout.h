@@ -62,4 +62,6 @@ void display_layout_text(const char *text, size_t columns, size_t max_lines,
 void display_render_plan_make(display_connection_t connection, uint8_t battery_percent,
                               size_t position, size_t total,
                               const notification_t *notification,
+                              bool bond_reset_progress_visible,
+                              uint8_t bond_reset_progress_percent,
                               display_render_plan_t *plan);

@@ -35,6 +35,13 @@ static const display_ui_model_t s_screens[] = {
      .position = 3U,
      .total = 5U,
      .notification = &s_group},
+    {.connection = UI_CONNECTED,
+     .battery_percent = 80U,
+     .position = 2U,
+     .total = 5U,
+     .notification = &s_direct,
+     .bond_reset_progress_visible = true,
+     .bond_reset_progress_percent = 50U},
 };
 
 void app_main(void)
