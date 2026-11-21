@@ -1,0 +1,2 @@
+# Experimental hardware A/B profile. Do not use as the default MVP profile.
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y

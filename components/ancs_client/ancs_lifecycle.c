@@ -2,8 +2,7 @@
 
 #include <string.h>
 
-#define ANCS_RECONNECT_INITIAL_MS 1000U
-#define ANCS_RECONNECT_MAX_MS 30000U
+#include "power_manager.h"
 
 static void clear_active(ancs_transport_t *transport)
 {
@@ -18,7 +17,6 @@ void ancs_transport_init(ancs_transport_t *transport)
     memset(transport, 0, sizeof(*transport));
     ancs_request_queue_init(&transport->queue);
     transport->conn_handle = ANCS_CONN_HANDLE_NONE;
-    transport->reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
 }
 
 void ancs_transport_connected(ancs_transport_t *transport, uint16_t conn_handle)
@@ -149,20 +147,17 @@ uint32_t ancs_transport_active_uid(const ancs_transport_t *transport)
 
 uint32_t ancs_transport_take_reconnect_delay(ancs_transport_t *transport)
 {
-    const uint32_t delay = transport->reconnect_delay_ms;
-
-    if (transport->reconnect_delay_ms < ANCS_RECONNECT_MAX_MS) {
-        transport->reconnect_delay_ms *= 2U;
-        if (transport->reconnect_delay_ms > ANCS_RECONNECT_MAX_MS) {
-            transport->reconnect_delay_ms = ANCS_RECONNECT_MAX_MS;
-        }
+    const uint32_t delay =
+        power_reconnect_delay_ms(transport->reconnect_failures);
+    if (transport->reconnect_failures < UINT8_MAX) {
+        transport->reconnect_failures++;
     }
     return delay;
 }
 
 void ancs_transport_subscriptions_ready(ancs_transport_t *transport)
 {
-    transport->reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
+    transport->reconnect_failures = 0U;
 }
 
 ancs_service_changed_decision_t

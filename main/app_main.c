@@ -14,6 +14,8 @@
 #include "freertos/task.h"
 #include "notification_normalizer.h"
 #include "nvs_flash.h"
+#include "power_manager.h"
+#include "sdkconfig.h"
 
 enum {
     APP_EVENT_QUEUE_CAPACITY = 8,
@@ -325,6 +327,21 @@ void app_main(void)
         ESP_LOGE(TAG, "NVS initialization failed; existing data preserved: %s",
                  esp_err_to_name(nvs_err));
         return;
+    }
+
+    const esp_err_t power_err = power_manager_init();
+    if (power_err != ESP_OK) {
+        ESP_LOGE(TAG, "power management initialization failed; continuing "
+                      "without configured DFS: %s",
+                 esp_err_to_name(power_err));
+    } else {
+#ifdef CONFIG_FREERTOS_USE_TICKLESS_IDLE
+        ESP_LOGW(TAG, "power management: DFS 80..240 MHz, experimental "
+                      "automatic light sleep enabled");
+#else
+        ESP_LOGI(TAG, "power management: DFS 80..240 MHz, automatic light "
+                      "sleep disabled");
+#endif
     }
 
     board_init();

@@ -25,8 +25,8 @@ typedef struct {
     ancs_request_queue_t queue;
     uint32_t active_uid;
     uint32_t generation;
-    uint32_t reconnect_delay_ms;
     uint16_t conn_handle;
+    uint8_t reconnect_failures;
     bool active;
     bool write_in_flight;
     bool active_canceled;

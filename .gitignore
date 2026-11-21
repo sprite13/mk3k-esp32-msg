@@ -1,3 +1,4 @@
 build/
+build-light-sleep/
 sdkconfig
 sdkconfig.old

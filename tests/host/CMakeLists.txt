@@ -4,6 +4,13 @@ enable_testing()
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/project_compile_policy.cmake)
 
+set(POWER_DIR ${CMAKE_CURRENT_LIST_DIR}/../../components/power_manager)
+add_library(power_manager_core
+    ${POWER_DIR}/power_manager.c
+)
+target_include_directories(power_manager_core PUBLIC ${POWER_DIR}/include)
+project_apply_compile_policy(power_manager_core)
+
 set(CORE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../components/notification_core)
 add_library(notification_core
     ${CORE_DIR}/notification_queue.c
@@ -16,6 +23,7 @@ target_include_directories(notification_core PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/../../main
 )
 project_apply_compile_policy(notification_core)
+target_link_libraries(notification_core PUBLIC power_manager_core)
 
 add_executable(test_notification_queue test_notification_queue.c)
 target_link_libraries(test_notification_queue PRIVATE notification_core)
@@ -92,5 +100,11 @@ add_executable(test_ancs_lifecycle
 target_include_directories(test_ancs_lifecycle PRIVATE
     ${ANCS_DIR}/internal_include
 )
+target_link_libraries(test_ancs_lifecycle PRIVATE power_manager_core)
 project_apply_compile_policy(test_ancs_lifecycle)
 add_test(NAME ancs_lifecycle COMMAND test_ancs_lifecycle)
+
+add_executable(test_power_manager test_power_manager.c)
+target_link_libraries(test_power_manager PRIVATE power_manager_core)
+project_apply_compile_policy(test_power_manager)
+add_test(NAME power_manager COMMAND test_power_manager)

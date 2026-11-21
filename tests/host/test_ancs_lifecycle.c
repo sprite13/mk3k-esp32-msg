@@ -81,11 +81,20 @@ static void test_queue_overflow_requires_recovery(void)
 static void test_backoff_resets_only_when_subscriptions_are_ready(void)
 {
     ancs_transport_t transport;
+    static const uint32_t expected[] = {
+        1000U, 2000U, 5000U, 10000U, 30000U,
+        60000U, 60000U, 60000U, 60000U,
+    };
 
     ancs_transport_init(&transport);
-    TEST_CHECK(ancs_transport_take_reconnect_delay(&transport) == 1000U);
-    ancs_transport_connected(&transport, 2U);
-    TEST_CHECK(ancs_transport_take_reconnect_delay(&transport) == 2000U);
+    for (size_t index = 0U;
+         index < sizeof(expected) / sizeof(expected[0]); ++index) {
+        TEST_CHECK(ancs_transport_take_reconnect_delay(&transport) ==
+                   expected[index]);
+        if (index == 0U) {
+            ancs_transport_connected(&transport, 2U);
+        }
+    }
     ancs_transport_subscriptions_ready(&transport);
     TEST_CHECK(ancs_transport_take_reconnect_delay(&transport) == 1000U);
 }
