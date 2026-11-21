@@ -181,6 +181,27 @@ ancs_peer_admission_decide(const ancs_peer_identity_t *bonded_peers,
     return ANCS_PEER_REJECT_UNKNOWN;
 }
 
+int ancs_unpair_peers(const ancs_peer_identity_t *bonded_peers,
+                      size_t bonded_peer_count,
+                      ancs_unpair_peer_fn unpair_peer, void *context)
+{
+    int first_error = 0;
+
+    if (bonded_peer_count == 0U) {
+        return 0;
+    }
+    if (bonded_peers == NULL || unpair_peer == NULL) {
+        return -1;
+    }
+    for (size_t index = 0U; index < bonded_peer_count; ++index) {
+        const int rc = unpair_peer(&bonded_peers[index], context);
+        if (first_error == 0 && rc != 0) {
+            first_error = rc;
+        }
+    }
+    return first_error;
+}
+
 ancs_service_changed_decision_t
 ancs_service_changed_decide(const uint8_t *data, size_t length,
                             ancs_handle_range_t *range)

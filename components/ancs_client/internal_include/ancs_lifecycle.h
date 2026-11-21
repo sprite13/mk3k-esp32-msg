@@ -66,10 +66,16 @@ typedef enum {
     ANCS_PEER_REJECT_UNKNOWN,
 } ancs_peer_admission_t;
 
+typedef int (*ancs_unpair_peer_fn)(const ancs_peer_identity_t *peer,
+                                   void *context);
+
 ancs_peer_admission_t
 ancs_peer_admission_decide(const ancs_peer_identity_t *bonded_peers,
                            size_t bonded_peer_count,
                            const ancs_peer_identity_t *peer);
+int ancs_unpair_peers(const ancs_peer_identity_t *bonded_peers,
+                      size_t bonded_peer_count,
+                      ancs_unpair_peer_fn unpair_peer, void *context);
 
 typedef struct {
     uint16_t start_handle;

@@ -760,30 +760,60 @@ static void bond_restart_event(struct ble_npl_event *event)
     emit_state(ANCS_CLIENT_PAIRING);
 }
 
+static ancs_peer_identity_t peer_identity(const ble_addr_t *address)
+{
+    ancs_peer_identity_t identity = {.type = address->type};
+    memcpy(identity.value, address->val, sizeof(identity.value));
+    return identity;
+}
+
+static int unpair_peer(const ancs_peer_identity_t *peer, void *context)
+{
+    ble_addr_t address = {.type = peer->type};
+
+    (void)context;
+    memcpy(address.val, peer->value, sizeof(address.val));
+    return ble_gap_unpair(&address);
+}
+
+static int unpair_bonded_peers(void)
+{
+    ble_addr_t stored_peers[CONFIG_BT_NIMBLE_MAX_BONDS];
+    ancs_peer_identity_t bonded_peers[CONFIG_BT_NIMBLE_MAX_BONDS];
+    int bonded_peer_count = 0;
+    int rc = ble_store_util_bonded_peers(
+        stored_peers, &bonded_peer_count, CONFIG_BT_NIMBLE_MAX_BONDS);
+    if (rc != 0) {
+        return rc;
+    }
+    if (bonded_peer_count < 0 ||
+        bonded_peer_count > CONFIG_BT_NIMBLE_MAX_BONDS) {
+        return BLE_HS_EINVAL;
+    }
+    for (int index = 0; index < bonded_peer_count; ++index) {
+        bonded_peers[index] = peer_identity(&stored_peers[index]);
+    }
+    return ancs_unpair_peers(bonded_peers, (size_t)bonded_peer_count,
+                             unpair_peer, NULL);
+}
+
 static void clear_bonds_and_queue_restart(void)
 {
     ancs_bond_action_t action;
 
     reset_requests();
     reset_discovery();
-    const int rc = ble_store_clear();
+    const int rc = unpair_bonded_peers();
     action = ancs_bond_reset_cleared(&s_client.bond_reset, rc == 0);
     if (rc != 0) {
         finish_bond_reset(false);
-        fail_connection("bond clear", rc);
+        fail_connection("bond unpair", rc);
         return;
     }
     if (action == ANCS_BOND_ACTION_QUEUE_RESTART) {
         ble_npl_eventq_put(nimble_port_get_dflt_eventq(),
                            &s_client.bond_restart_event);
     }
-}
-
-static ancs_peer_identity_t peer_identity(const ble_addr_t *address)
-{
-    ancs_peer_identity_t identity = {.type = address->type};
-    memcpy(identity.value, address->val, sizeof(identity.value));
-    return identity;
 }
 
 static bool connected_peer_is_admitted(uint16_t conn_handle)

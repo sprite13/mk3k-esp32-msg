@@ -180,6 +180,89 @@ static void test_bond_reset_stale_transitions_do_not_report(void)
                ANCS_BOND_ACTION_NONE);
 }
 
+typedef struct {
+    ancs_peer_identity_t visited[3];
+    int results[3];
+    size_t call_count;
+} unpair_mock_t;
+
+static int record_unpair(const ancs_peer_identity_t *peer, void *context)
+{
+    unpair_mock_t *mock = context;
+    const size_t index = mock->call_count;
+
+    TEST_CHECK(index < sizeof(mock->visited) / sizeof(mock->visited[0]));
+    mock->visited[index] = *peer;
+    mock->call_count++;
+    return mock->results[index];
+}
+
+static void test_bond_reset_unpairs_every_peer_and_propagates_failure(void)
+{
+    const ancs_peer_identity_t peers[] = {
+        {.type = 0U, .value = {0x10U, 0U, 0U, 0U, 0U, 0U}},
+        {.type = 1U, .value = {0x20U, 0U, 0U, 0U, 0U, 0U}},
+        {.type = 1U, .value = {0x30U, 0U, 0U, 0U, 0U, 0U}},
+    };
+    unpair_mock_t mock = {.results = {0, 47, 83}};
+    ancs_bond_reset_t reset;
+
+    ancs_bond_reset_init(&reset);
+    TEST_CHECK(ancs_bond_reset_request(&reset, false, false) ==
+               ANCS_BOND_ACTION_CLEAR_BONDS);
+    const int rc = ancs_unpair_peers(
+        peers, sizeof(peers) / sizeof(peers[0]), record_unpair, &mock);
+    TEST_CHECK(rc == 47);
+    TEST_CHECK(mock.call_count == 3U);
+    for (size_t index = 0U; index < mock.call_count; ++index) {
+        TEST_CHECK(mock.visited[index].type == peers[index].type);
+        TEST_CHECK(mock.visited[index].value[0] == peers[index].value[0]);
+    }
+    TEST_CHECK(ancs_bond_reset_cleared(&reset, rc == 0) ==
+               ANCS_BOND_ACTION_NONE);
+    TEST_CHECK(ancs_bond_reset_restart(&reset) == ANCS_BOND_ACTION_NONE);
+}
+
+static void test_bond_reset_opens_pairing_only_after_successful_unpair(void)
+{
+    const ancs_peer_identity_t peer = {
+        .type = 1U,
+        .value = {0x42U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U},
+    };
+    unpair_mock_t mock = {0};
+    ancs_bond_reset_t reset;
+
+    ancs_bond_reset_init(&reset);
+    TEST_CHECK(ancs_bond_reset_request(&reset, true, false) ==
+               ANCS_BOND_ACTION_DISCONNECT);
+    TEST_CHECK(ancs_bond_reset_link_stopped(&reset) ==
+               ANCS_BOND_ACTION_CLEAR_BONDS);
+    TEST_CHECK(ancs_bond_reset_restart(&reset) == ANCS_BOND_ACTION_NONE);
+    TEST_CHECK(ancs_unpair_peers(&peer, 1U, record_unpair, &mock) == 0);
+    TEST_CHECK(mock.call_count == 1U);
+    TEST_CHECK(mock.visited[0].value[0] == peer.value[0]);
+    TEST_CHECK(ancs_bond_reset_cleared(&reset, true) ==
+               ANCS_BOND_ACTION_QUEUE_RESTART);
+    TEST_CHECK(ancs_bond_reset_restart(&reset) ==
+               ANCS_BOND_ACTION_ADVERTISE);
+}
+
+static void test_bond_reset_zero_peers_succeeds_without_unpair_call(void)
+{
+    unpair_mock_t mock = {0};
+    ancs_bond_reset_t reset;
+
+    ancs_bond_reset_init(&reset);
+    TEST_CHECK(ancs_bond_reset_request(&reset, false, false) ==
+               ANCS_BOND_ACTION_CLEAR_BONDS);
+    TEST_CHECK(ancs_unpair_peers(NULL, 0U, record_unpair, &mock) == 0);
+    TEST_CHECK(mock.call_count == 0U);
+    TEST_CHECK(ancs_bond_reset_cleared(&reset, true) ==
+               ANCS_BOND_ACTION_QUEUE_RESTART);
+    TEST_CHECK(ancs_bond_reset_restart(&reset) ==
+               ANCS_BOND_ACTION_ADVERTISE);
+}
+
 static void test_bonded_peer_admission(void)
 {
     const ancs_peer_identity_t known = {
@@ -214,6 +297,9 @@ int main(void)
     test_bond_reset_queues_restart_after_link_stop();
     test_bond_reset_late_failure_reports_once();
     test_bond_reset_stale_transitions_do_not_report();
+    test_bond_reset_unpairs_every_peer_and_propagates_failure();
+    test_bond_reset_opens_pairing_only_after_successful_unpair();
+    test_bond_reset_zero_peers_succeeds_without_unpair_call();
     test_bonded_peer_admission();
     return 0;
 }
