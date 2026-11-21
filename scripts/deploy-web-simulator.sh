@@ -86,43 +86,121 @@ link_target() {
 set_link() {
     local name="$1" target="$2" temporary
     temporary="$base/.${name}.new.$$"
-    [[ ! -e "$base/$name" || -L "$base/$name" ]] || { echo "error: $name is not a symlink" >&2; exit 1; }
+    [[ ! -e "$base/$name" || -L "$base/$name" ]] || { echo "error: $name is not a symlink" >&2; return 1; }
     rm -f -- "$temporary"
     if [[ -z "$target" ]]; then
         rm -f -- "$base/$name"
         return
     fi
     [[ "$target" =~ ^releases/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ && -d "$base/$target" ]] \
-        || { echo "error: refusing unsafe symlink target" >&2; exit 1; }
+        || { echo "error: refusing unsafe symlink target" >&2; return 1; }
     ln -s -- "$target" "$temporary"
     mv -Tf -- "$temporary" "$base/$name"
 }
 
-activate_links() {
+validate_staging() {
+    local staging="$1" expected actual manifest_files runtime_files file
+    expected="$(cat <<'ENTRIES'
+d assets
+d dist
+d src
+d styles
+f SHA256SUMS
+f assets/m5stick-outline.svg
+f dist/mk3k-simulator.mjs
+f dist/mk3k-simulator.wasm
+f index.html
+f src/accessibility.mjs
+f src/app.mjs
+f src/audio.mjs
+f src/controls.mjs
+f src/device-renderer.mjs
+f src/frame-scheduler.mjs
+f src/interactions.mjs
+f src/scenario-controller.mjs
+f src/scenarios.mjs
+f src/startup-controller.mjs
+f src/wasm-client.mjs
+f styles/main.css
+ENTRIES
+)"
+    actual="$(cd "$staging" && find . -mindepth 1 -printf '%y %P\n' | LC_ALL=C sort)"
+    [[ "$actual" == "$expected" ]] || {
+        echo "error: staged entries or types differ from the runtime allowlist" >&2
+        diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") >&2 || true
+        return 1
+    }
+    runtime_files="$(printf '%s\n' "$expected" | sed -n 's/^f //p' | grep -v '^SHA256SUMS$')"
+    manifest_files="$(sed -E 's/^[0-9a-f]{64}  //' "$staging/SHA256SUMS" | LC_ALL=C sort)"
+    [[ "$manifest_files" == "$runtime_files" ]] \
+        || { echo "error: staged manifest does not exactly cover runtime files" >&2; return 1; }
+    while IFS= read -r file; do
+        [[ "$(stat -c '%h' "$staging/$file")" == 1 ]] \
+            || { echo "error: staged runtime file is a hardlink: $file" >&2; return 1; }
+    done < <(printf '%s\n' "$runtime_files" SHA256SUMS)
+    (cd "$staging" && sha256sum -c SHA256SUMS)
+}
+
+activate_links() (
     local next_current="$1" next_previous="$2"
-    local old_current old_previous status
+    local old_current old_previous committed=0 recovery_started=0 reload_attempted=0
     old_current="$(link_target current)"
     old_previous="$(link_target previous)"
-    set_link current "$next_current"
-    set_link previous "$next_previous"
-    set +e
-    nginx -t
-    status=$?
-    if [[ $status -eq 0 ]]; then
-        systemctl reload nginx
-        status=$?
-    fi
-    set -e
-    if [[ $status -ne 0 ]]; then
-        echo "error: nginx validation or reload failed; restoring prior links" >&2
-        set_link current "$old_current"
-        set_link previous "$old_previous"
-        if [[ -n "$old_current" ]]; then
-            nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+
+    recover_activation() {
+        local status=$? previous_status current_status
+        [[ $recovery_started -eq 0 ]] || exit "$status"
+        recovery_started=1
+        trap - EXIT ERR
+        trap '' INT TERM HUP
+        if [[ $committed -eq 0 ]]; then
+            set +e
+            set_link previous "$old_previous"
+            previous_status=$?
+            set_link current "$old_current"
+            current_status=$?
+            if [[ $previous_status -ne 0 || $current_status -ne 0 ]]; then
+                echo "error: activation recovery could not restore both release links" >&2
+                status=1
+            elif [[ $reload_attempted -eq 1 && -n "$old_current" ]]; then
+                nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+            fi
         fi
-        return "$status"
+        exit "$status"
+    }
+    activation_error() {
+        local status=$?
+        trap - ERR
+        exit "$status"
+    }
+    activation_signal() {
+        local status="$1"
+        trap '' INT TERM HUP
+        exit "$status"
+    }
+
+    set -E
+    trap recover_activation EXIT
+    trap activation_error ERR
+    trap 'activation_signal 130' INT
+    trap 'activation_signal 143' TERM
+    trap 'activation_signal 129' HUP
+
+    # previous is bookkeeping; current is service-critical and changes last.
+    set_link previous "$next_previous"
+    if [[ "${MK3K_DEPLOY_TEST_FAIL_AFTER_PREVIOUS:-}" == "1" ]]; then
+        false
     fi
-}
+    if [[ "${MK3K_DEPLOY_TEST_TERM_AFTER_PREVIOUS:-}" == "1" ]]; then
+        kill -TERM "$BASHPID"
+    fi
+    set_link current "$next_current"
+    nginx -t
+    reload_attempted=1
+    systemctl reload nginx
+    committed=1
+    trap - EXIT ERR INT TERM HUP
+)
 
 case "$mode" in
     prepare)
@@ -140,11 +218,7 @@ case "$mode" in
         [[ -n "$release" ]] || exit 64
         staging="$base/.incoming-$release"
         [[ -d "$staging" && ! -L "$staging" ]] || { echo "error: missing staging directory" >&2; exit 1; }
-        if find "$staging" -mindepth 1 -type l -print -quit | grep -q .; then
-            echo "error: staged release contains a symlink" >&2
-            exit 1
-        fi
-        (cd "$staging" && sha256sum -c SHA256SUMS)
+        validate_staging "$staging"
         chown -R root:root "$staging"
         find "$staging" -type f -exec chmod 0444 {} +
         chmod 0755 "$base" "$base/releases"

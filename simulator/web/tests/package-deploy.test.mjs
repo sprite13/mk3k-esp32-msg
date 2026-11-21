@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, chmodSync, cpSync, existsSync, lstatSync, readlinkSync, readdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, chmodSync, cpSync, existsSync, lstatSync, linkSync, readlinkSync, readdirSync, rmSync, symlinkSync, unlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -40,6 +40,13 @@ function makeTreeWritable(directory) {
   chmodSync(directory, 0o755);
 }
 
+function rewriteManifest(directory) {
+  const runtimeFiles = filesBelow(directory).filter((name) => name !== 'SHA256SUMS');
+  const manifest = spawnSync('sha256sum', runtimeFiles, { cwd: directory, encoding: 'utf8' });
+  assert.equal(manifest.status, 0, manifest.stderr || manifest.stdout);
+  writeFileSync(join(directory, 'SHA256SUMS'), manifest.stdout);
+}
+
 test('package contains only deterministic runtime files with a complete manifest', () => {
   const result = run(packageScript);
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -74,6 +81,7 @@ test('package validation rejects source maps, symlinks and absolute-root URLs', 
   const fixture = mkdtempSync(join(tmpdir(), 'mk3k-package-invalid-'));
   try {
     cpSync(artifact, fixture, { recursive: true });
+    makeTreeWritable(fixture);
     writeFileSync(join(fixture, 'leak.map'), '{}\n');
     let result = run(packageScript, ['--check', fixture]);
     assert.notEqual(result.status, 0);
@@ -84,8 +92,32 @@ test('package validation rejects source maps, symlinks and absolute-root URLs', 
     assert.notEqual(result.status, 0);
     unlinkSync(join(fixture, 'linked-index'));
 
-    const html = readFileSync(join(fixture, 'index.html'), 'utf8').replace('./styles/main.css', '/styles/main.css');
-    writeFileSync(join(fixture, 'index.html'), html);
+    const pipe = join(fixture, 'unexpected-pipe');
+    const fifo = spawnSync('mkfifo', [pipe], { encoding: 'utf8' });
+    assert.equal(fifo.status, 0, fifo.stderr || fifo.stdout);
+    result = run(packageScript, ['--check', fixture]);
+    assert.notEqual(result.status, 0);
+    unlinkSync(pipe);
+
+    const cssPath = join(fixture, 'styles/main.css');
+    const originalCss = readFileSync(cssPath, 'utf8');
+    unlinkSync(cssPath);
+    linkSync(join(fixture, 'index.html'), cssPath);
+    rewriteManifest(fixture);
+    result = run(packageScript, ['--check', fixture]);
+    assert.notEqual(result.status, 0);
+    unlinkSync(cssPath);
+    writeFileSync(cssPath, originalCss);
+    chmodSync(cssPath, 0o644);
+
+    const originalHtml = readFileSync(join(fixture, 'index.html'), 'utf8');
+    writeFileSync(join(fixture, 'index.html'), originalHtml.replace('./styles/main.css', '//cdn.invalid/main.css'));
+    rewriteManifest(fixture);
+    result = run(packageScript, ['--check', fixture]);
+    assert.notEqual(result.status, 0);
+
+    writeFileSync(join(fixture, 'index.html'), originalHtml.replace('./styles/main.css', '/styles/main.css'));
+    rewriteManifest(fixture);
     result = run(packageScript, ['--check', fixture]);
     assert.notEqual(result.status, 0);
   } finally {
@@ -98,15 +130,15 @@ test('interruption after old package rename restores it before cleaning temporar
   const oldMarker = '<!-- preserved old package -->\n';
   const canonicalManifest = readFileSync(join(artifact, 'SHA256SUMS'), 'utf8');
   writeFileSync(join(artifact, 'index.html'), `${oldMarker}${readFileSync(join(artifact, 'index.html'), 'utf8')}`);
-  const runtimeFiles = filesBelow(artifact).filter((name) => name !== 'SHA256SUMS');
-  const manifest = spawnSync('sha256sum', runtimeFiles, { cwd: artifact, encoding: 'utf8' });
-  assert.equal(manifest.status, 0, manifest.stderr || manifest.stdout);
-  writeFileSync(join(artifact, 'SHA256SUMS'), manifest.stdout);
+  rewriteManifest(artifact);
   const oldCheck = run(packageScript, ['--check', artifact]);
   assert.equal(oldCheck.status, 0, oldCheck.stderr || oldCheck.stdout);
 
   const interrupted = run(packageScript, [], {
-    env: { MK3K_PACKAGE_TEST_INTERRUPT_AFTER_BACKUP: '1' },
+    env: {
+      MK3K_PACKAGE_TEST_INTERRUPT_AFTER_BACKUP: '1',
+      MK3K_PACKAGE_TEST_SECOND_TERM_DURING_RESTORE: '1',
+    },
   });
   assert.notEqual(interrupted.status, 0);
   assert.match(readFileSync(join(artifact, 'index.html'), 'utf8'), /preserved old package/);
@@ -127,29 +159,22 @@ test('interruption after old package rename restores it before cleaning temporar
   assert.deepEqual(replacementLeftovers, []);
 });
 
-test('interruption while deleting old backup never restores over installed package', () => {
+test('signal during old backup cleanup is ignored after installing new package', () => {
   const oldMarker = '<!-- old package must not return -->\n';
   writeFileSync(join(artifact, 'index.html'), `${oldMarker}${readFileSync(join(artifact, 'index.html'), 'utf8')}`);
-  const runtimeFiles = filesBelow(artifact).filter((name) => name !== 'SHA256SUMS');
-  const manifest = spawnSync('sha256sum', runtimeFiles, { cwd: artifact, encoding: 'utf8' });
-  assert.equal(manifest.status, 0, manifest.stderr || manifest.stdout);
-  writeFileSync(join(artifact, 'SHA256SUMS'), manifest.stdout);
+  rewriteManifest(artifact);
 
   const interrupted = run(packageScript, [], {
     env: { MK3K_PACKAGE_TEST_INTERRUPT_DURING_BACKUP_CLEANUP: '1' },
   });
-  assert.notEqual(interrupted.status, 0);
+  assert.equal(interrupted.status, 0, interrupted.stderr || interrupted.stdout);
   assert.doesNotMatch(readFileSync(join(artifact, 'index.html'), 'utf8'), /old package must not return/);
   const currentCheck = run(packageScript, ['--check', artifact]);
   assert.equal(currentCheck.status, 0, currentCheck.stderr || currentCheck.stdout);
 
   const backups = readdirSync(join(root, 'artifacts'))
     .filter((name) => name.startsWith('.mk3k-esp32-preview.previous.'));
-  assert.equal(backups.length, 1);
-  assert.match(readFileSync(join(root, 'artifacts', backups[0], 'index.html'), 'utf8'), /old package must not return/);
-  const backupPath = join(root, 'artifacts', backups[0]);
-  makeTreeWritable(backupPath);
-  rmSync(backupPath, { recursive: true });
+  assert.deepEqual(backups, []);
 });
 
 test('deploy and rollback atomically swap validated releases and restore on nginx failure', () => {
@@ -157,11 +182,12 @@ test('deploy and rollback atomically swap validated releases and restore on ngin
   const bin = join(fixture, 'bin');
   const remote = join(fixture, 'remote');
   const log = join(fixture, 'service.log');
+  const chownLog = join(fixture, 'chown.log');
   mkdirSync(bin);
   mkdirSync(remote);
-  writeFileSync(join(bin, 'ssh'), `#!/bin/sh\n[ "$1" = "-T" ] && shift\nshift\nexec "$@"\n`);
+  writeFileSync(join(bin, 'ssh'), `#!/bin/sh\n[ "$1" = "-T" ] && shift\nshift\n"$@"\nstatus=$?\ncase " $* " in\n  *" tar -xf "*)\n    [ -z "${'$'}{FAKE_REMOTE_FIFO:-}" ] || mkfifo "${'$'}FAKE_REMOTE_FIFO"\n    [ -z "${'$'}{FAKE_REMOTE_EXTRA_FILE:-}" ] || printf 'unexpected\\n' > "${'$'}FAKE_REMOTE_EXTRA_FILE"\n    ;;\nesac\nexit "${'$'}status"\n`);
   writeFileSync(join(bin, 'sudo'), '#!/bin/sh\nexec "$@"\n');
-  writeFileSync(join(bin, 'chown'), '#!/bin/sh\nexit 0\n');
+  writeFileSync(join(bin, 'chown'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${chownLog}"\nexit 0\n`);
   writeFileSync(join(bin, 'nginx'), `#!/bin/sh\nif [ -n "${'$'}{FAKE_NGINX_FAIL_ONCE_FILE:-}" ] && [ -e "${'$'}FAKE_NGINX_FAIL_ONCE_FILE" ]; then rm -f "${'$'}FAKE_NGINX_FAIL_ONCE_FILE"; exit 1; fi\nexit 0\n`);
   writeFileSync(join(bin, 'systemctl'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\nif [ -n "${'$'}{FAKE_RELOAD_FAIL_ONCE_FILE:-}" ] && [ -e "${'$'}FAKE_RELOAD_FAIL_ONCE_FILE" ]; then rm -f "${'$'}FAKE_RELOAD_FAIL_ONCE_FILE"; exit 1; fi\n`);
   for (const name of ['ssh', 'sudo', 'chown', 'nginx', 'systemctl']) chmodSync(join(bin, name), 0o755);
@@ -175,6 +201,25 @@ test('deploy and rollback atomically swap validated releases and restore on ngin
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(readlinkSync(join(remote, 'current')), 'releases/r1');
     assert.equal(existsSync(join(remote, 'previous')), false);
+    assert.equal(readFileSync(chownLog, 'utf8').trim(), `-R root:root ${remote}/.incoming-r1`);
+    assert.equal(statSync(join(remote, 'releases/r1')).mode & 0o777, 0o555);
+    assert.equal(statSync(join(remote, 'releases/r1/index.html')).mode & 0o777, 0o444);
+
+    result = run(deployScript, ['--host', 'fake.test', '--release', 'bad-fifo', artifact], {
+      env: { ...env, FAKE_REMOTE_FIFO: join(remote, '.incoming-bad-fifo/unexpected-pipe') },
+    });
+    assert.notEqual(result.status, 0);
+    assert.equal(readlinkSync(join(remote, 'current')), 'releases/r1');
+    assert.equal(existsSync(join(remote, 'releases/bad-fifo')), false);
+    assert.equal(existsSync(join(remote, '.incoming-bad-fifo/unexpected-pipe')), true);
+
+    result = run(deployScript, ['--host', 'fake.test', '--release', 'bad-extra', artifact], {
+      env: { ...env, FAKE_REMOTE_EXTRA_FILE: join(remote, '.incoming-bad-extra/unexpected.txt') },
+    });
+    assert.notEqual(result.status, 0);
+    assert.equal(readlinkSync(join(remote, 'current')), 'releases/r1');
+    assert.equal(existsSync(join(remote, 'releases/bad-extra')), false);
+    assert.equal(existsSync(join(remote, '.incoming-bad-extra/unexpected.txt')), true);
 
     result = run(deployScript, ['--host', 'fake.test', '--release', 'r2', artifact], { env });
     assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -186,14 +231,38 @@ test('deploy and rollback atomically swap validated releases and restore on ngin
     assert.equal(readlinkSync(join(remote, 'current')), 'releases/r1');
     assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r2');
 
+    result = run(deployScript, ['--host', 'fake.test', '--rollback'], { env });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(readlinkSync(join(remote, 'current')), 'releases/r2');
+    assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r1');
+
+    const reloadsBeforeTransactionFailure = readFileSync(log, 'utf8');
+    result = run(deployScript, ['--host', 'fake.test', '--release', 'tx-fail', artifact], {
+      env: { ...env, MK3K_DEPLOY_TEST_FAIL_AFTER_PREVIOUS: '1' },
+    });
+    assert.notEqual(result.status, 0);
+    assert.equal(readlinkSync(join(remote, 'current')), 'releases/r2');
+    assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r1');
+    assert.equal(readFileSync(log, 'utf8'), reloadsBeforeTransactionFailure);
+    assert.equal(existsSync(join(remote, 'releases/tx-fail')), true);
+
+    result = run(deployScript, ['--host', 'fake.test', '--release', 'tx-term', artifact], {
+      env: { ...env, MK3K_DEPLOY_TEST_TERM_AFTER_PREVIOUS: '1' },
+    });
+    assert.notEqual(result.status, 0);
+    assert.equal(readlinkSync(join(remote, 'current')), 'releases/r2');
+    assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r1');
+    assert.equal(readFileSync(log, 'utf8'), reloadsBeforeTransactionFailure);
+    assert.equal(existsSync(join(remote, 'releases/tx-term')), true);
+
     const fail = join(fixture, 'fail-nginx-once');
     writeFileSync(fail, '1');
     result = run(deployScript, ['--host', 'fake.test', '--release', 'r3', artifact], {
       env: { ...env, FAKE_NGINX_FAIL_ONCE_FILE: fail },
     });
     assert.notEqual(result.status, 0);
-    assert.equal(readlinkSync(join(remote, 'current')), 'releases/r1');
-    assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r2');
+    assert.equal(readlinkSync(join(remote, 'current')), 'releases/r2');
+    assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r1');
     assert.equal(existsSync(join(remote, 'releases/r1')), true);
     assert.equal(existsSync(join(remote, 'releases/r2')), true);
     assert.equal(existsSync(join(remote, 'releases/r3')), true);
@@ -205,14 +274,14 @@ test('deploy and rollback atomically swap validated releases and restore on ngin
       env: { ...env, FAKE_RELOAD_FAIL_ONCE_FILE: reloadFail },
     });
     assert.notEqual(result.status, 0);
-    assert.equal(readlinkSync(join(remote, 'current')), 'releases/r1');
-    assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r2');
+    assert.equal(readlinkSync(join(remote, 'current')), 'releases/r2');
+    assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r1');
     assert.equal(existsSync(join(remote, 'releases/r4')), true);
 
     result = run(deployScript, ['--host', 'fake.test', artifact], { env });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(readlinkSync(join(remote, 'current')), /^releases\/\d{8}T\d{6}Z-[0-9a-f]{12}$/);
-    assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r1');
+    assert.equal(readlinkSync(join(remote, 'previous')), 'releases/r2');
     assert.equal(existsSync(join(remote, 'releases/r2')), true);
   } finally {
     makeTreeWritable(fixture);

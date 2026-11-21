@@ -35,10 +35,13 @@ validate_package() {
     [[ ! -L "$package_dir" ]] || die "package root must not be a symlink"
 
     local expected actual
-    expected="$(printf '%s\n' "${runtime_files[@]}" SHA256SUMS | LC_ALL=C sort)"
-    actual="$(cd "$package_dir" && find . -type f -printf '%P\n' | LC_ALL=C sort)"
+    expected="$({
+        printf 'd %s\n' assets dist src styles
+        printf 'f %s\n' "${runtime_files[@]}" SHA256SUMS
+    } | LC_ALL=C sort)"
+    actual="$(cd "$package_dir" && find . -mindepth 1 -printf '%y %P\n' | LC_ALL=C sort)"
     [[ "$actual" == "$expected" ]] || {
-        echo "error: package file list differs from the runtime allowlist" >&2
+        echo "error: package entries or types differ from the runtime allowlist" >&2
         diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") >&2 || true
         exit 1
     }
@@ -58,11 +61,16 @@ validate_package() {
         'https?://[^/]' "$package_dir" >/dev/null; then
         die "package contains a remote HTTP resource"
     fi
+    if grep -RInE --include='*.html' --include='*.css' --include='*.mjs' \
+        '//[A-Za-z0-9][A-Za-z0-9.-]*[/:]' "$package_dir" >/dev/null; then
+        die "package contains a protocol-relative remote resource"
+    fi
     while IFS= read -r directory; do
         [[ "$(stat -c '%a' "$directory")" == 755 ]] || die "directory mode is not 0755: $directory"
     done < <(find "$package_dir" -type d -print)
     while IFS= read -r file; do
         [[ "$(stat -c '%a' "$file")" == 644 ]] || die "file mode is not 0644: $file"
+        [[ "$(stat -c '%h' "$file")" == 1 ]] || die "runtime file must not be a hardlink: $file"
     done < <(find "$package_dir" -type f -print)
     (cd "$package_dir" && sha256sum -c SHA256SUMS >/dev/null) \
         || die "SHA256SUMS verification failed"
@@ -105,12 +113,16 @@ cleanup() {
     local status=$? cleanup_status=0
     [[ $cleanup_started -eq 0 ]] || exit "$status"
     cleanup_started=1
-    trap - EXIT INT TERM HUP
+    trap - EXIT
+    trap '' INT TERM HUP
     set +e
 
     if [[ -n "$backup" && -d "$backup" ]]; then
         if [[ $new_package_installed -eq 0 ]]; then
             if [[ ! -e "$default_package" && ! -L "$default_package" ]]; then
+                if [[ "${MK3K_PACKAGE_TEST_SECOND_TERM_DURING_RESTORE:-}" == "1" ]]; then
+                    kill -TERM "$$"
+                fi
                 if mv -- "$backup" "$default_package"; then
                     backup=""
                 else
@@ -120,13 +132,16 @@ cleanup() {
             else
                 echo "warning: preserving backup because package state is ambiguous: $backup" >&2
             fi
-        # Narrow fault injection used only by the package transaction regression test.
-        elif [[ "${MK3K_PACKAGE_TEST_INTERRUPT_DURING_BACKUP_CLEANUP:-}" == "1" ]]; then
-            kill -TERM "$$"
-        elif ! remove_temporary_tree "$backup"; then
-            echo "warning: new package is valid, but old backup cleanup failed: $backup" >&2
         else
-            backup=""
+            # Narrow fault injection used only by the package transaction regression test.
+            if [[ "${MK3K_PACKAGE_TEST_INTERRUPT_DURING_BACKUP_CLEANUP:-}" == "1" ]]; then
+                kill -TERM "$$"
+            fi
+            if ! remove_temporary_tree "$backup"; then
+                echo "warning: new package is valid, but old backup cleanup failed: $backup" >&2
+            else
+                backup=""
+            fi
         fi
     fi
     if [[ -n "$staging" ]] && ! remove_temporary_tree "$staging"; then
@@ -140,7 +155,7 @@ cleanup() {
 
 on_signal() {
     local status="$1"
-    trap - INT TERM HUP
+    trap '' INT TERM HUP
     exit "$status"
 }
 
