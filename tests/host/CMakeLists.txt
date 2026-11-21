@@ -50,6 +50,13 @@ target_link_libraries(test_app_screen PRIVATE app_core)
 project_apply_compile_policy(test_app_screen)
 add_test(NAME app_screen COMMAND test_app_screen)
 
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../simulator/wasm
+                 ${CMAKE_CURRENT_BINARY_DIR}/simulator_wasm)
+add_executable(test_simulator_api test_simulator_api.c)
+target_link_libraries(test_simulator_api PRIVATE simulator_api)
+project_apply_compile_policy(test_simulator_api)
+add_test(NAME simulator_api COMMAND test_simulator_api)
+
 add_executable(test_app_notification_ring
     test_app_notification_ring.c
     ${CMAKE_CURRENT_LIST_DIR}/../../main/app_notification_ring.c

@@ -35,6 +35,11 @@ static void test_screen_copies_selection_and_tracks_state(void)
 {
     app_state_t state;
     app_state_init(&state);
+    app_state_reduce(
+        &state,
+        &(app_event_t){.type = APP_EVENT_CONNECTION_STATE,
+                       .data.connection = APP_CONNECTION_CONNECTED},
+        0);
     for (uint32_t uid = 1U; uid <= 2U; ++uid) {
         notification_t item = {.uid = uid};
         strncpy(item.app_id, TELEGRAM_IOS_BUNDLE_ID,
@@ -52,6 +57,7 @@ static void test_screen_copies_selection_and_tracks_state(void)
     app_screen_t screen;
     app_screen_make(&state, &screen);
     TEST_CHECK(screen.notification_present);
+    TEST_CHECK(screen.connection == APP_CONNECTION_CONNECTED);
     TEST_CHECK(screen.notification.uid == 1U);
     TEST_CHECK(screen.position == 2U);
     TEST_CHECK(screen.total == 2U);
