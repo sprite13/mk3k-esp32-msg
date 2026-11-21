@@ -45,7 +45,7 @@ void app_main(void)
          .total = 5U,
          .notification = &direct},
         {.connection = UI_CONNECTED,
-         .battery_percent = 79U,
+         .battery_percent = 15U,
          .position = 3U,
          .total = 5U,
          .notification = &group},

@@ -10,7 +10,7 @@ typedef enum { UI_PAIRING, UI_CONNECTED, UI_RECONNECTING, UI_ERROR } ui_connecti
 
 typedef struct {
     ui_connection_state_t connection;
-    uint8_t battery_percent;
+    uint8_t battery_percent; /* 0..100; values above 100 mean unknown. */
     size_t position;
     size_t total;
     const notification_t *notification;

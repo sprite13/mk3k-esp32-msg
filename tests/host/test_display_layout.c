@@ -17,6 +17,20 @@ static void check_line(const display_text_layout_t *layout, size_t line,
     }
 }
 
+static void check_render_line(const display_render_plan_t *plan, size_t line,
+                              const char *expected)
+{
+    const char *cursor = expected;
+    uint32_t codepoint;
+    size_t index = 0U;
+    while (display_utf8_next(&cursor, &codepoint)) {
+        TEST_CHECK(index < plan->lines[line].length);
+        TEST_CHECK(plan->lines[line].glyphs[index] == codepoint);
+        ++index;
+    }
+    TEST_CHECK(plan->lines[line].length == index);
+}
+
 static void test_utf8_decoder(void)
 {
     const char valid[] = "A\xD0\xAF\xD1\x8F";
@@ -96,9 +110,60 @@ static void test_content_fallbacks(void)
 
     memset(&notification, 0, sizeof(notification));
     display_content_select(&notification, &content);
-    TEST_CHECK(strcmp(content.title, "Новое сообщение в Telegram") == 0);
+    TEST_CHECK(content.title[0] == '\0');
     TEST_CHECK(content.subtitle[0] == '\0');
-    TEST_CHECK(content.message[0] == '\0');
+    TEST_CHECK(strcmp(content.message, "Новое сообщение в Telegram") == 0);
+}
+
+static void test_low_battery_render_plan(void)
+{
+    display_render_plan_t plan;
+    display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 15U, 3U, 5U, NULL,
+                             &plan);
+    TEST_CHECK(plan.lines[0].style == DISPLAY_LINE_WARNING);
+    check_render_line(&plan, 0U, "Подключено !15% 3/5");
+
+    display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 16U, 3U, 5U, NULL,
+                             &plan);
+    TEST_CHECK(plan.lines[0].style == DISPLAY_LINE_STATUS);
+    check_render_line(&plan, 0U, "Подключено 16% 3/5");
+
+    display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, UINT8_MAX, 3U, 5U,
+                             NULL, &plan);
+    TEST_CHECK(plan.lines[0].style == DISPLAY_LINE_STATUS);
+    check_render_line(&plan, 0U, "Подключено --% 3/5");
+}
+
+static void test_empty_notification_render_plan(void)
+{
+    const notification_t notification = {0};
+    display_render_plan_t plan;
+    display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 80U, 1U, 1U,
+                             &notification, &plan);
+
+    TEST_CHECK(plan.lines[1].style == DISPLAY_LINE_BODY);
+    TEST_CHECK(plan.lines[2].style == DISPLAY_LINE_BODY);
+    check_render_line(&plan, 1U, "Новое сообщение в");
+    check_render_line(&plan, 2U, "Telegram");
+    TEST_CHECK(plan.lines[3].length == 0U);
+}
+
+static void test_normal_notification_render_plan(void)
+{
+    notification_t notification = {0};
+    strcpy(notification.title, "Title");
+    strcpy(notification.subtitle, "Subtitle");
+    strcpy(notification.message, "Message body");
+    display_render_plan_t plan;
+    display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 80U, 2U, 5U,
+                             &notification, &plan);
+
+    TEST_CHECK(plan.lines[1].style == DISPLAY_LINE_TITLE);
+    TEST_CHECK(plan.lines[2].style == DISPLAY_LINE_SUBTITLE);
+    TEST_CHECK(plan.lines[3].style == DISPLAY_LINE_BODY);
+    check_render_line(&plan, 1U, "Title");
+    check_render_line(&plan, 2U, "Subtitle");
+    check_render_line(&plan, 3U, "Message body");
 }
 
 static void test_wrapping_and_ellipsis(void)
@@ -131,6 +196,9 @@ int main(void)
     test_utf8_decoder();
     test_font_coverage();
     test_content_fallbacks();
+    test_low_battery_render_plan();
+    test_empty_notification_render_plan();
+    test_normal_notification_render_plan();
     test_wrapping_and_ellipsis();
     return 0;
 }

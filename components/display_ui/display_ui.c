@@ -1,8 +1,6 @@
 #include "display_ui.h"
 
 #include <stdbool.h>
-#include <stdio.h>
-#include <string.h>
 
 #include "board.h"
 #include "display_layout.h"
@@ -21,9 +19,7 @@ enum {
     DISPLAY_WIDTH = DISPLAY_PANEL_HEIGHT,
     DISPLAY_HEIGHT = DISPLAY_PANEL_WIDTH,
     DISPLAY_STRIPE_HEIGHT = DISPLAY_FONT_HEIGHT,
-    DISPLAY_TEXT_ROWS = 6,
     DISPLAY_TOP_MARGIN = 7,
-    DISPLAY_COLUMNS = DISPLAY_WIDTH / DISPLAY_FONT_WIDTH,
 };
 
 #define RGB565(red, green, blue)                                                   \
@@ -39,12 +35,6 @@ static const uint16_t COLOR_SUBTITLE = RGB565(79U, 209U, 197U);
 static const uint16_t COLOR_CONNECTED = RGB565(102U, 214U, 139U);
 static const uint16_t COLOR_WARNING = RGB565(255U, 183U, 77U);
 static const uint16_t COLOR_ERROR = RGB565(255U, 92U, 92U);
-
-typedef struct {
-    uint32_t glyphs[DISPLAY_COLUMNS];
-    size_t length;
-    uint16_t color;
-} rendered_line_t;
 
 static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_panel_io;
@@ -64,105 +54,38 @@ static bool transfer_done(esp_lcd_panel_io_handle_t panel_io,
     return task_woken == pdTRUE;
 }
 
-static const char *state_text(ui_connection_state_t state)
+static display_connection_t display_connection(ui_connection_state_t state)
 {
     switch (state) {
     case UI_PAIRING:
-        return "Сопряжение";
+        return DISPLAY_CONNECTION_PAIRING;
     case UI_CONNECTED:
-        return "Подключено";
+        return DISPLAY_CONNECTION_CONNECTED;
     case UI_RECONNECTING:
-        return "Нет связи";
+        return DISPLAY_CONNECTION_RECONNECTING;
     case UI_ERROR:
-        return "Ошибка";
+        return DISPLAY_CONNECTION_ERROR;
     default:
-        return "Ошибка";
+        return DISPLAY_CONNECTION_ERROR;
     }
 }
 
-static uint16_t state_color(ui_connection_state_t state)
+static uint16_t line_color(display_line_style_t style, ui_connection_state_t state)
 {
-    switch (state) {
-    case UI_CONNECTED:
-        return COLOR_CONNECTED;
-    case UI_PAIRING:
-    case UI_RECONNECTING:
+    switch (style) {
+    case DISPLAY_LINE_WARNING:
         return COLOR_WARNING;
-    case UI_ERROR:
+    case DISPLAY_LINE_TITLE:
+        return COLOR_TITLE;
+    case DISPLAY_LINE_SUBTITLE:
+        return COLOR_SUBTITLE;
+    case DISPLAY_LINE_BODY:
+        return COLOR_TEXT;
+    case DISPLAY_LINE_STATUS:
     default:
-        return COLOR_ERROR;
+        return state == UI_CONNECTED ? COLOR_CONNECTED
+                                     : (state == UI_ERROR ? COLOR_ERROR : COLOR_WARNING);
     }
-}
-
-static void set_line(rendered_line_t *line, const uint32_t *glyphs, size_t length,
-                     uint16_t color)
-{
-    line->length = length;
-    line->color = color;
-    if (length > 0U) {
-        memcpy(line->glyphs, glyphs, length * sizeof(glyphs[0]));
-    }
-}
-
-static size_t add_text(rendered_line_t *lines, size_t first_line, size_t max_lines,
-                       const char *text, uint16_t color)
-{
-    if (first_line >= DISPLAY_TEXT_ROWS || max_lines == 0U || text == NULL ||
-        text[0] == '\0') {
-        return first_line;
-    }
-    if (max_lines > DISPLAY_TEXT_ROWS - first_line) {
-        max_lines = DISPLAY_TEXT_ROWS - first_line;
-    }
-
-    display_text_layout_t layout;
-    display_layout_text(text, DISPLAY_COLUMNS, max_lines, &layout);
-    for (size_t index = 0U; index < layout.line_count; ++index) {
-        set_line(&lines[first_line + index], layout.lines[index],
-                 layout.line_lengths[index], color);
-    }
-    return first_line + layout.line_count;
-}
-
-static void format_status(const display_ui_model_t *model, char *status,
-                          size_t status_size)
-{
-    if (model->total > 0U) {
-        (void)snprintf(status, status_size, "%s %u%% %zu/%zu",
-                       state_text(model->connection), (unsigned int)model->battery_percent,
-                       model->position, model->total);
-    } else {
-        (void)snprintf(status, status_size, "%s %u%%", state_text(model->connection),
-                       (unsigned int)model->battery_percent);
-    }
-}
-
-static void make_render_plan(const display_ui_model_t *model,
-                             rendered_line_t lines[DISPLAY_TEXT_ROWS])
-{
-    memset(lines, 0, sizeof(rendered_line_t) * DISPLAY_TEXT_ROWS);
-    char status[64];
-    format_status(model, status, sizeof(status));
-    size_t next = add_text(lines, 0U, 1U, status, state_color(model->connection));
-
-    if (model->connection == UI_CONNECTED && model->notification != NULL) {
-        display_content_t content;
-        display_content_select(model->notification, &content);
-        next = add_text(lines, next, 1U, content.title, COLOR_TITLE);
-        next = add_text(lines, next, 1U, content.subtitle, COLOR_SUBTITLE);
-        (void)add_text(lines, next, DISPLAY_TEXT_ROWS - next, content.message, COLOR_TEXT);
-        return;
-    }
-
-    const char *message = "Нет уведомлений";
-    if (model->connection == UI_PAIRING) {
-        message = "Ожидание iPhone";
-    } else if (model->connection == UI_RECONNECTING) {
-        message = "Переподключение";
-    } else if (model->connection == UI_ERROR) {
-        message = "Ошибка соединения";
-    }
-    (void)add_text(lines, next + 1U, 2U, message, COLOR_TEXT);
 }
 
 static void paint_glyph(uint16_t *stripe, size_t x, const uint16_t *rows,
@@ -177,7 +100,8 @@ static void paint_glyph(uint16_t *stripe, size_t x, const uint16_t *rows,
     }
 }
 
-static esp_err_t draw_line(size_t row, const rendered_line_t *line)
+static esp_err_t draw_line(size_t row, const display_render_line_t *line,
+                           ui_connection_state_t connection)
 {
     for (size_t index = 0U; index < DISPLAY_WIDTH * DISPLAY_STRIPE_HEIGHT; ++index) {
         s_stripe[index] = COLOR_BACKGROUND;
@@ -185,7 +109,8 @@ static esp_err_t draw_line(size_t row, const rendered_line_t *line)
     for (size_t column = 0U; column < line->length; ++column) {
         const uint16_t *glyph_rows;
         if (display_font_get_glyph(line->glyphs[column], &glyph_rows)) {
-            paint_glyph(s_stripe, column * DISPLAY_FONT_WIDTH, glyph_rows, line->color);
+            paint_glyph(s_stripe, column * DISPLAY_FONT_WIDTH, glyph_rows,
+                        line_color(line->style, connection));
         }
     }
 
@@ -321,15 +246,18 @@ void display_ui_render(const display_ui_model_t *model)
         s_sleeping = false;
     }
 
-    rendered_line_t lines[DISPLAY_TEXT_ROWS];
-    make_render_plan(model, lines);
+    display_render_plan_t plan;
+    display_render_plan_make(display_connection(model->connection),
+                             model->battery_percent, model->position, model->total,
+                             model->notification, &plan);
     esp_err_t err = fill_margin(0, DISPLAY_TOP_MARGIN);
-    for (size_t row = 0U; err == ESP_OK && row < DISPLAY_TEXT_ROWS; ++row) {
-        err = draw_line(row, &lines[row]);
+    for (size_t row = 0U; err == ESP_OK && row < DISPLAY_LAYOUT_MAX_LINES; ++row) {
+        err = draw_line(row, &plan.lines[row], model->connection);
     }
     if (err == ESP_OK) {
-        err = fill_margin(DISPLAY_TOP_MARGIN + (DISPLAY_TEXT_ROWS * DISPLAY_FONT_HEIGHT),
-                          DISPLAY_HEIGHT);
+        err = fill_margin(
+            DISPLAY_TOP_MARGIN + (DISPLAY_LAYOUT_MAX_LINES * DISPLAY_FONT_HEIGHT),
+            DISPLAY_HEIGHT);
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "render failed: %s", esp_err_to_name(err));

@@ -1,5 +1,6 @@
 #include "display_layout.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #define DISPLAY_LAYOUT_MAX_INPUT_CODEPOINTS 256U
@@ -87,9 +88,9 @@ void display_content_select(const notification_t *notification, display_content_
     const bool has_message = notification->message[0] != '\0';
 
     if (!has_title && !has_subtitle && !has_message) {
-        content->title = FALLBACK_EMPTY;
+        content->title = "";
         content->subtitle = "";
-        content->message = "";
+        content->message = FALLBACK_EMPTY;
     } else {
         content->title = has_title ? notification->title
                                    : (has_subtitle ? "" : FALLBACK_TELEGRAM);
@@ -245,4 +246,117 @@ void display_layout_text(const char *text, size_t columns, size_t max_lines,
     if (layout->truncated) {
         add_ellipsis(layout, columns);
     }
+}
+
+static const char *connection_text(display_connection_t connection)
+{
+    switch (connection) {
+    case DISPLAY_CONNECTION_PAIRING:
+        return "Сопряжение";
+    case DISPLAY_CONNECTION_CONNECTED:
+        return "Подключено";
+    case DISPLAY_CONNECTION_RECONNECTING:
+        return "Нет связи";
+    case DISPLAY_CONNECTION_ERROR:
+    default:
+        return "Ошибка";
+    }
+}
+
+static void render_line_set(display_render_line_t *line, const uint32_t *glyphs,
+                            size_t length, display_line_style_t style)
+{
+    line->length = length;
+    line->style = style;
+    if (length > 0U) {
+        memcpy(line->glyphs, glyphs, length * sizeof(glyphs[0]));
+    }
+}
+
+static size_t render_plan_add(display_render_plan_t *plan, size_t first_line,
+                              size_t max_lines, const char *text,
+                              display_line_style_t style)
+{
+    if (first_line >= DISPLAY_LAYOUT_MAX_LINES || max_lines == 0U || text == NULL ||
+        text[0] == '\0') {
+        return first_line;
+    }
+    if (max_lines > DISPLAY_LAYOUT_MAX_LINES - first_line) {
+        max_lines = DISPLAY_LAYOUT_MAX_LINES - first_line;
+    }
+
+    display_text_layout_t layout;
+    display_layout_text(text, DISPLAY_LAYOUT_MAX_COLUMNS, max_lines, &layout);
+    for (size_t index = 0U; index < layout.line_count; ++index) {
+        render_line_set(&plan->lines[first_line + index], layout.lines[index],
+                        layout.line_lengths[index], style);
+    }
+    return first_line + layout.line_count;
+}
+
+static bool battery_is_low(uint8_t battery_percent)
+{
+    return battery_percent <= DISPLAY_LOW_BATTERY_PERCENT;
+}
+
+static void render_status(display_connection_t connection, uint8_t battery_percent,
+                          size_t position, size_t total, char *status,
+                          size_t status_size)
+{
+    const char *battery_prefix = battery_is_low(battery_percent) ? "!" : "";
+    if (battery_percent > 100U) {
+        if (total > 0U) {
+            (void)snprintf(status, status_size, "%s --%% %zu/%zu",
+                           connection_text(connection), position, total);
+        } else {
+            (void)snprintf(status, status_size, "%s --%%",
+                           connection_text(connection));
+        }
+    } else if (total > 0U) {
+        (void)snprintf(status, status_size, "%s %s%u%% %zu/%zu",
+                       connection_text(connection), battery_prefix,
+                       (unsigned int)battery_percent, position, total);
+    } else {
+        (void)snprintf(status, status_size, "%s %s%u%%", connection_text(connection),
+                       battery_prefix, (unsigned int)battery_percent);
+    }
+}
+
+void display_render_plan_make(display_connection_t connection, uint8_t battery_percent,
+                              size_t position, size_t total,
+                              const notification_t *notification,
+                              display_render_plan_t *plan)
+{
+    if (plan == NULL) {
+        return;
+    }
+    memset(plan, 0, sizeof(*plan));
+
+    char status[64];
+    render_status(connection, battery_percent, position, total, status,
+                  sizeof(status));
+    const display_line_style_t status_style =
+        battery_is_low(battery_percent) ? DISPLAY_LINE_WARNING : DISPLAY_LINE_STATUS;
+    size_t next = render_plan_add(plan, 0U, 1U, status, status_style);
+
+    if (connection == DISPLAY_CONNECTION_CONNECTED && notification != NULL) {
+        display_content_t content;
+        display_content_select(notification, &content);
+        next = render_plan_add(plan, next, 1U, content.title, DISPLAY_LINE_TITLE);
+        next = render_plan_add(plan, next, 1U, content.subtitle,
+                               DISPLAY_LINE_SUBTITLE);
+        (void)render_plan_add(plan, next, DISPLAY_LAYOUT_MAX_LINES - next,
+                              content.message, DISPLAY_LINE_BODY);
+        return;
+    }
+
+    const char *message = "Нет уведомлений";
+    if (connection == DISPLAY_CONNECTION_PAIRING) {
+        message = "Ожидание iPhone";
+    } else if (connection == DISPLAY_CONNECTION_RECONNECTING) {
+        message = "Переподключение";
+    } else if (connection == DISPLAY_CONNECTION_ERROR) {
+        message = "Ошибка соединения";
+    }
+    (void)render_plan_add(plan, next + 1U, 2U, message, DISPLAY_LINE_BODY);
 }
