@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 version="$(tr -d '\r\n' < .emscripten-version)"
 emsdk_root="${MK3K_EMSDK_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/mk3k-emsdk}"
+expected_origin="https://github.com/emscripten-core/emsdk.git"
 build_dir="$repo_root/.web-simulator-build"
 dist_dir="$repo_root/simulator/web/dist"
 artifacts_dir="$repo_root/simulator/web/artifacts"
@@ -15,6 +16,21 @@ if [[ "$version" != "4.0.18" ]]; then
 fi
 if [[ ! -f "$emsdk_root/emsdk_env.sh" ]]; then
     echo "error: pinned emsdk is missing; run scripts/install-emsdk.sh" >&2
+    exit 1
+fi
+if [[ ! -d "$emsdk_root/.git" ]]; then
+    echo "error: pinned emsdk is not a git checkout: $emsdk_root" >&2
+    exit 1
+fi
+origin="$(git -C "$emsdk_root" remote get-url origin)"
+head_commit="$(git -C "$emsdk_root" rev-parse HEAD)"
+tag_commit="$(git -C "$emsdk_root" rev-parse "refs/tags/$version^{commit}" 2>/dev/null || true)"
+if [[ "$origin" != "$expected_origin" ]]; then
+    echo "error: unexpected emsdk origin at $emsdk_root: $origin" >&2
+    exit 1
+fi
+if [[ -z "$tag_commit" ]] || [[ "$head_commit" != "$tag_commit" ]]; then
+    echo "error: $emsdk_root is not checked out at exact tag $version" >&2
     exit 1
 fi
 
@@ -28,6 +44,7 @@ if [[ "$actual_version" != "$version" ]]; then
 fi
 
 mkdir -p "$build_dir" "$dist_dir" "$artifacts_dir"
+node --test simulator/web/tests/scenarios-generator.test.mjs
 node simulator/web/tests/scenarios.mjs --emit-c > "$build_dir/scenarios.generated.h"
 
 common_sources=(

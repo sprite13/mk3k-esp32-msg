@@ -7,8 +7,12 @@ import { scenarios } from './scenarios.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const distModule = resolve(here, '../dist/mk3k-simulator.mjs');
 const createModule = (await import(distModule)).default;
-const nativeSnapshots = JSON.parse(await readFile(resolve(here, '../artifacts/native-scenarios.json'), 'utf8'));
 const module = await createModule({ locateFile: (name) => resolve(here, '../dist', name) });
+const SUPPORTED_ABI_VERSION = 1;
+const actualAbiVersion = module._simulator_abi_version();
+assert.equal(actualAbiVersion, SUPPORTED_ABI_VERSION,
+  `unsupported simulator ABI: ${actualAbiVersion}; expected ${SUPPORTED_ABI_VERSION}`);
+const nativeSnapshots = JSON.parse(await readFile(resolve(here, '../artifacts/native-scenarios.json'), 'utf8'));
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
@@ -24,6 +28,7 @@ function cString(offset, capacity) {
 
 function snapshot() {
   const pointer = module._malloc(SNAPSHOT_SIZE);
+  if (pointer === 0) throw new Error(`WASM allocation failed for ${SNAPSHOT_SIZE}-byte snapshot`);
   try {
     assert.equal(module._simulator_snapshot(pointer), 0);
     const view = new DataView(module.HEAPU8.buffer, pointer, SNAPSHOT_SIZE);
@@ -42,6 +47,7 @@ function snapshot() {
 function withCString(value, callback) {
   const bytes = encoder.encode(value);
   const pointer = module._malloc(bytes.length + 1);
+  if (pointer === 0) throw new Error(`WASM allocation failed for ${bytes.length + 1}-byte string`);
   module.HEAPU8.set(bytes, pointer); module.HEAPU8[pointer + bytes.length] = 0;
   try { return callback(pointer); } finally { module._free(pointer); }
 }

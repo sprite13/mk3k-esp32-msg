@@ -53,8 +53,11 @@ const actionKinds = {
   battery: 'ACTION_BATTERY', 'previews-hidden': 'ACTION_PREVIEWS_HIDDEN',
 };
 
-const cString = (value = '') => JSON.stringify(value).replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
-  String.fromCodePoint(Number.parseInt(hex, 16)));
+export function cStringLiteral(value = '') {
+  const bytes = new TextEncoder().encode(value);
+  const escaped = Array.from(bytes, (byte) => `\\${byte.toString(8).padStart(3, '0')}`).join('');
+  return `"${escaped}"`;
+}
 
 export function emitCHeader() {
   const lines = ['/* Generated from simulator/web/tests/scenarios.mjs. */'];
@@ -62,13 +65,13 @@ export function emitCHeader() {
     lines.push(`static const scenario_action_t scenario_${scenarioIndex}_actions[] = {`);
     scenario.actions.forEach((action) => {
       const at = action.at ?? 0n;
-      lines.push(`    {${actionKinds[action.type]}, INT64_C(${at}), ${action.percent ?? 0}U, ${action.hidden ? 'true' : 'false'}, ${cString(action.title)}, ${cString(action.subtitle)}, ${cString(action.message)}},`);
+      lines.push(`    {${actionKinds[action.type]}, INT64_C(${at}), ${action.percent ?? 0}U, ${action.hidden ? 'true' : 'false'}, ${cStringLiteral(action.title)}, ${cStringLiteral(action.subtitle)}, ${cStringLiteral(action.message)}},`);
     });
     lines.push('};');
   });
   lines.push('static const scenario_t scenarios[] = {');
   scenarios.forEach((scenario, index) => {
-    lines.push(`    {${cString(scenario.name)}, scenario_${index}_actions, sizeof(scenario_${index}_actions) / sizeof(scenario_${index}_actions[0])},`);
+    lines.push(`    {${cStringLiteral(scenario.name)}, scenario_${index}_actions, sizeof(scenario_${index}_actions) / sizeof(scenario_${index}_actions[0])},`);
   });
   lines.push('};', 'static const size_t scenario_count = sizeof(scenarios) / sizeof(scenarios[0]);');
   return `${lines.join('\n')}\n`;
