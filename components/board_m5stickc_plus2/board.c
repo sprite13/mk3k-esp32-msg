@@ -114,12 +114,13 @@ static void buzzer_task(void *arg)
                     ESP_LOGE(TAG, "failed to start beep: %s", esp_err_to_name(err));
                 }
             }
-        } else if (board_buzzer_expire(&state, (uint64_t)esp_timer_get_time())) {
-            buzzer_silence();
         }
 
-        const uint64_t remaining_us =
-            board_buzzer_remaining_us(&state, (uint64_t)esp_timer_get_time());
+        uint64_t remaining_us;
+        if (board_buzzer_prepare_wait(&state, (uint64_t)esp_timer_get_time(),
+                                      &remaining_us)) {
+            buzzer_silence();
+        }
         wait_ticks = remaining_us > 0U ? buzzer_wait_ticks(remaining_us) : portMAX_DELAY;
     }
 }

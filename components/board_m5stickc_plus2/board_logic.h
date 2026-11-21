@@ -24,3 +24,5 @@ void board_buzzer_start(board_buzzer_state_t *state, uint64_t now_us,
                         uint32_t duration_ms);
 bool board_buzzer_expire(board_buzzer_state_t *state, uint64_t now_us);
 uint64_t board_buzzer_remaining_us(const board_buzzer_state_t *state, uint64_t now_us);
+bool board_buzzer_prepare_wait(board_buzzer_state_t *state, uint64_t now_us,
+                               uint64_t *remaining_us);

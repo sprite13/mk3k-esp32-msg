@@ -73,6 +73,18 @@ static void test_stale_timeout_cannot_stop_replacement(void)
     TEST_CHECK(!state.active);
 }
 
+static void test_elapsed_one_ms_beep_expires_before_wait(void)
+{
+    board_buzzer_state_t state = {0};
+    uint64_t remaining_us = UINT64_MAX;
+
+    board_buzzer_start(&state, 5000U, 1U);
+
+    TEST_CHECK(board_buzzer_prepare_wait(&state, 6001U, &remaining_us));
+    TEST_CHECK(!state.active);
+    TEST_CHECK(remaining_us == 0U);
+}
+
 int main(void)
 {
     test_debounce_requires_30_ms_stable_sample();
@@ -81,5 +93,6 @@ int main(void)
     test_beep_duration_is_bounded();
     test_replacement_uses_new_deadline();
     test_stale_timeout_cannot_stop_replacement();
+    test_elapsed_one_ms_beep_expires_before_wait();
     return 0;
 }

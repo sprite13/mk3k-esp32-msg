@@ -62,3 +62,11 @@ uint64_t board_buzzer_remaining_us(const board_buzzer_state_t *state, uint64_t n
     }
     return state->deadline_us - now_us;
 }
+
+bool board_buzzer_prepare_wait(board_buzzer_state_t *state, uint64_t now_us,
+                               uint64_t *remaining_us)
+{
+    const bool expired = board_buzzer_expire(state, now_us);
+    *remaining_us = board_buzzer_remaining_us(state, now_us);
+    return expired;
+}
