@@ -26,6 +26,7 @@ typedef enum {
     APP_EVENT_CONNECTION_STATE,
     APP_EVENT_BOND_RESET_RESULT,
     APP_EVENT_DISPLAY_FAILURE,
+    APP_EVENT_BATTERY_PERCENT,
 } app_event_type_t;
 
 typedef enum {
@@ -50,12 +51,14 @@ typedef struct {
         notification_t notification;
         app_connection_state_t connection;
         bool bond_reset_succeeded;
+        uint8_t battery_percent;
     } data;
 } app_event_t;
 
 typedef struct {
     notification_queue_t queue;
     app_connection_state_t connection;
+    uint8_t battery_percent;
     bool display_awake;
     bool forget_bond_requested;
     bool notification_accepted;
@@ -73,10 +76,3 @@ void app_state_init(app_state_t *state);
 void app_state_reduce(app_state_t *state, const app_event_t *event,
                       int64_t now_us);
 bool app_state_take_forget_bond_request(app_state_t *state);
-
-/*
- * A zero reading means the calibrated ADC value is unavailable. Known LiPo
- * voltage is linearly interpolated through 3300=0%, 3600=20%, 3700=50%,
- * 3850=75%, and 4200=100%, with values outside that range clamped.
- */
-uint8_t app_battery_percent(uint32_t millivolts);

@@ -4,6 +4,7 @@
 
 #include "ancs_client.h"
 #include "app_notification_ring.h"
+#include "app_screen.h"
 #include "app_state.h"
 #include "board.h"
 #include "display_ui.h"
@@ -145,17 +146,32 @@ static ui_bond_reset_state_t map_ui_bond_reset(app_bond_reset_state_t state)
     }
 }
 
-static bool render_state(const app_state_t *state)
+static uint8_t read_battery_percent(void)
 {
-    const size_t total = notification_queue_size(&state->queue);
+    const uint32_t millivolts = board_battery_millivolts();
+    return millivolts == 0U ? APP_BATTERY_PERCENT_UNKNOWN :
+                             power_battery_percent(millivolts);
+}
+
+static bool render_state(app_state_t *state, int64_t now_us)
+{
+    const app_event_t battery_event = {
+        .type = APP_EVENT_BATTERY_PERCENT,
+        .data.battery_percent = read_battery_percent(),
+    };
+    app_state_reduce(state, &battery_event, now_us);
+
+    app_screen_t screen;
+    app_screen_make(state, &screen);
     const display_ui_model_t model = {
-        .connection = map_ui_connection(state->connection),
-        .battery_percent = app_battery_percent(board_battery_millivolts()),
-        .position = total == 0U ? 0U : state->queue.selected_offset + 1U,
-        .total = total,
-        .notification = notification_queue_current(&state->queue),
-        .bond_reset_state = map_ui_bond_reset(state->bond_reset_state),
-        .bond_reset_progress_percent = state->bond_reset_progress_percent,
+        .connection = map_ui_connection(screen.connection),
+        .battery_percent = screen.battery_percent,
+        .position = screen.position,
+        .total = screen.total,
+        .notification = screen.notification_present ? &screen.notification :
+                                                     NULL,
+        .bond_reset_state = map_ui_bond_reset(screen.bond_reset_state),
+        .bond_reset_progress_percent = screen.bond_reset_progress_percent,
     };
     display_ui_render(&model);
     const bool healthy = display_ui_is_healthy();
@@ -167,7 +183,7 @@ static void render_boot_error(void)
 {
     const display_ui_model_t model = {
         .connection = UI_ERROR,
-        .battery_percent = app_battery_percent(board_battery_millivolts()),
+        .battery_percent = read_battery_percent(),
     };
     display_ui_render(&model);
     board_backlight_set(display_ui_is_healthy());
@@ -197,6 +213,7 @@ static bool event_should_render(const app_event_t *event,
                     state->bond_reset_progress_percent /
                         APP_BOND_PROGRESS_RENDER_STEP_PERCENT);
     case APP_EVENT_DISPLAY_FAILURE:
+    case APP_EVENT_BATTERY_PERCENT:
         return false;
     }
     return false;
@@ -211,6 +228,7 @@ static void apply_event(app_state_t *state, const app_event_t *event,
     const app_bond_reset_state_t previous_reset_state =
         state->bond_reset_state;
     app_state_reduce(state, event, now_us);
+    const bool notification_accepted = state->notification_accepted;
     const bool forget_bond_requested =
         app_state_take_forget_bond_request(state);
 
@@ -222,12 +240,12 @@ static void apply_event(app_state_t *state, const app_event_t *event,
         event_should_render(event, state, forget_bond_requested,
                             previous_progress_percent,
                             previous_reset_state)) {
-        if (!render_state(state)) {
+        if (!render_state(state, now_us)) {
             const app_event_t failed = {.type = APP_EVENT_DISPLAY_FAILURE};
             app_state_reduce(state, &failed, now_us);
         }
     }
-    if (state->notification_accepted) {
+    if (notification_accepted) {
         board_beep(APP_NOTIFICATION_BEEP_HZ, APP_NOTIFICATION_BEEP_MS);
     }
     if (forget_bond_requested) {

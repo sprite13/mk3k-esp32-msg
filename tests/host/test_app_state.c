@@ -352,18 +352,18 @@ static void test_connection_state(void)
     TEST_CHECK(state.display_deadline_us == 50U + APP_DISPLAY_TIMEOUT_US);
 }
 
-static void test_battery_voltage_mapping(void)
+static void test_battery_percent_event(void)
 {
-    TEST_CHECK(app_battery_percent(0U) == APP_BATTERY_PERCENT_UNKNOWN);
-    TEST_CHECK(app_battery_percent(3200U) == 0U);
-    TEST_CHECK(app_battery_percent(3300U) == 0U);
-    TEST_CHECK(app_battery_percent(3450U) == 10U);
-    TEST_CHECK(app_battery_percent(3600U) == 20U);
-    TEST_CHECK(app_battery_percent(3650U) == 35U);
-    TEST_CHECK(app_battery_percent(3700U) == 50U);
-    TEST_CHECK(app_battery_percent(3850U) == 75U);
-    TEST_CHECK(app_battery_percent(4200U) == 100U);
-    TEST_CHECK(app_battery_percent(4300U) == 100U);
+    app_state_t state;
+    app_state_init(&state);
+    TEST_CHECK(state.battery_percent == APP_BATTERY_PERCENT_UNKNOWN);
+
+    const app_event_t event = {
+        .type = APP_EVENT_BATTERY_PERCENT,
+        .data.battery_percent = 14U,
+    };
+    app_state_reduce(&state, &event, 0);
+    TEST_CHECK(state.battery_percent == 14U);
 }
 
 int main(void)
@@ -380,6 +380,6 @@ int main(void)
     test_display_failure_clears_visible_assumption();
     test_display_deadline_and_delayed_processing();
     test_connection_state();
-    test_battery_voltage_mapping();
+    test_battery_percent_event();
     return 0;
 }

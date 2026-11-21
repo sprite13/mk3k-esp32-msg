@@ -3,7 +3,6 @@
 #include <stddef.h>
 
 #include "notification_normalizer.h"
-#include "power_manager.h"
 
 static void wake_display(app_state_t *state, int64_t now_us)
 {
@@ -45,6 +44,7 @@ void app_state_init(app_state_t *state)
 {
     notification_queue_init(&state->queue);
     state->connection = APP_CONNECTION_PAIRING;
+    state->battery_percent = APP_BATTERY_PERCENT_UNKNOWN;
     state->display_awake = false;
     state->forget_bond_requested = false;
     state->notification_accepted = false;
@@ -146,6 +146,9 @@ void app_state_reduce(app_state_t *state, const app_event_t *event,
         state->display_awake = false;
         state->display_deadline_us = 0;
         break;
+    case APP_EVENT_BATTERY_PERCENT:
+        state->battery_percent = event->data.battery_percent;
+        break;
     }
 }
 
@@ -157,12 +160,4 @@ bool app_state_take_forget_bond_request(app_state_t *state)
     state->forget_bond_requested = false;
     state->bond_reset_state = APP_BOND_RESET_SUBMITTED;
     return true;
-}
-
-uint8_t app_battery_percent(uint32_t millivolts)
-{
-    if (millivolts == 0U) {
-        return APP_BATTERY_PERCENT_UNKNOWN;
-    }
-    return power_battery_percent(millivolts);
 }

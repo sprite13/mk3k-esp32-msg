@@ -15,15 +15,20 @@ set(CORE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../components/notification_core)
 add_library(notification_core
     ${CORE_DIR}/notification_queue.c
     ${CORE_DIR}/notification_normalizer.c
-    ${CMAKE_CURRENT_LIST_DIR}/../../main/app_notification_ring.c
-    ${CMAKE_CURRENT_LIST_DIR}/../../main/app_state.c
 )
 target_include_directories(notification_core PUBLIC
     ${CORE_DIR}/include
-    ${CMAKE_CURRENT_LIST_DIR}/../../main
 )
 project_apply_compile_policy(notification_core)
-target_link_libraries(notification_core PUBLIC power_manager_core)
+
+set(APP_CORE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../components/app_core)
+add_library(app_core
+    ${APP_CORE_DIR}/app_state.c
+    ${APP_CORE_DIR}/app_screen.c
+)
+target_include_directories(app_core PUBLIC ${APP_CORE_DIR}/include)
+target_link_libraries(app_core PUBLIC notification_core)
+project_apply_compile_policy(app_core)
 
 add_executable(test_notification_queue test_notification_queue.c)
 target_link_libraries(test_notification_queue PRIVATE notification_core)
@@ -36,12 +41,21 @@ project_apply_compile_policy(test_notification_normalizer)
 add_test(NAME notification_normalizer COMMAND test_notification_normalizer)
 
 add_executable(test_app_state test_app_state.c)
-target_link_libraries(test_app_state PRIVATE notification_core)
+target_link_libraries(test_app_state PRIVATE app_core)
 project_apply_compile_policy(test_app_state)
 add_test(NAME app_state COMMAND test_app_state)
 
+add_executable(test_app_screen test_app_screen.c)
+target_link_libraries(test_app_screen PRIVATE app_core)
+project_apply_compile_policy(test_app_screen)
+add_test(NAME app_screen COMMAND test_app_screen)
+
 add_executable(test_app_notification_ring
     test_app_notification_ring.c
+    ${CMAKE_CURRENT_LIST_DIR}/../../main/app_notification_ring.c
+)
+target_include_directories(test_app_notification_ring PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/../../main
 )
 target_link_libraries(test_app_notification_ring PRIVATE notification_core)
 project_apply_compile_policy(test_app_notification_ring)
