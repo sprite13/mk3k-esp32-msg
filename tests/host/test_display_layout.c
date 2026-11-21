@@ -31,6 +31,21 @@ static void check_render_line(const display_render_plan_t *plan, size_t line,
     TEST_CHECK(plan->lines[line].length == index);
 }
 
+static void check_layout_line(const display_text_layout_t *layout, size_t line,
+                              const char *expected)
+{
+    const char *cursor = expected;
+    uint32_t codepoint;
+    size_t index = 0U;
+    TEST_CHECK(line < layout->line_count);
+    while (display_utf8_next(&cursor, &codepoint)) {
+        TEST_CHECK(index < layout->line_lengths[line]);
+        TEST_CHECK(layout->lines[line][index] == codepoint);
+        ++index;
+    }
+    TEST_CHECK(layout->line_lengths[line] == index);
+}
+
 static void test_utf8_decoder(void)
 {
     const char valid[] = "A\xD0\xAF\xD1\x8F";
@@ -71,6 +86,22 @@ static void test_font_coverage(void)
     }
     for (uint32_t codepoint = 0x0400U; codepoint <= 0x04FFU; ++codepoint) {
         TEST_CHECK(display_font_get_glyph(codepoint, &rows));
+        TEST_CHECK(rows != NULL);
+        uint16_t pixels = 0U;
+        for (size_t row = 0U; row < DISPLAY_FONT_HEIGHT; ++row) {
+            pixels |= rows[row];
+        }
+        TEST_CHECK(pixels != 0U);
+    }
+    static const uint32_t punctuation[] = {
+        0x00ABU, 0x00BBU, 0x2010U, 0x2011U, 0x2012U,
+        0x2013U, 0x2014U, 0x2015U, 0x2018U, 0x2019U,
+        0x201AU, 0x201BU, 0x201CU, 0x201DU, 0x201EU,
+        0x201FU, 0x2022U, 0x2026U, 0x2039U, 0x203AU,
+    };
+    for (size_t index = 0U; index < sizeof(punctuation) / sizeof(punctuation[0]);
+         ++index) {
+        TEST_CHECK(display_font_get_glyph(punctuation[index], &rows));
         TEST_CHECK(rows != NULL);
         uint16_t pixels = 0U;
         for (size_t row = 0U; row < DISPLAY_FONT_HEIGHT; ++row) {
@@ -189,6 +220,10 @@ static void test_wrapping_and_ellipsis(void)
     display_layout_text("A\xF0\x9F\x98\x80 B", 4U, 1U, &layout);
     TEST_CHECK(!layout.truncated);
     check_line(&layout, 0U, "A B");
+
+    display_layout_text("«слово»—текст…", DISPLAY_LAYOUT_MAX_COLUMNS, 1U, &layout);
+    TEST_CHECK(!layout.truncated);
+    check_layout_line(&layout, 0U, "«слово»—текст…");
 }
 
 int main(void)

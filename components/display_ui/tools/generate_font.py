@@ -21,6 +21,16 @@ WIDTH = 12
 HEIGHT = 20
 SIZE = 16
 BASELINE = 16
+PUNCTUATION = (
+    0x00AB,
+    0x00BB,
+    *range(0x2010, 0x2016),
+    *range(0x2018, 0x2020),
+    0x2022,
+    0x2026,
+    0x2039,
+    0x203A,
+)
 
 
 def source_bytes(path: pathlib.Path | None) -> bytes:
@@ -71,6 +81,22 @@ def emit_array(name: str, start: int, end: int, rows: dict[int, tuple[int, ...]]
     return "\n".join(output)
 
 
+def emit_sparse_array(
+    name: str, codepoints: tuple[int, ...], rows: dict[int, tuple[int, ...]]
+) -> str:
+    output = [
+        f"static const uint32_t {name}_CODEPOINTS[{len(codepoints)}] = {{",
+        "    " + ", ".join(f"0x{codepoint:04X}U" for codepoint in codepoints),
+        "};",
+        f"static const uint16_t {name}[{len(codepoints)}][DISPLAY_FONT_HEIGHT] = {{",
+    ]
+    for codepoint in codepoints:
+        values = ", ".join(f"0x{row:03X}U" for row in rows[codepoint])
+        output.append(f"    /* U+{codepoint:04X} */ {{{values}}},")
+    output.append("};")
+    return "\n".join(output)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--font", type=pathlib.Path)
@@ -82,7 +108,11 @@ def main() -> None:
     cache.write_bytes(data)
     try:
         cmap = TTFont(cache).getBestCmap()
-        required = list(range(0x20, 0x7F)) + list(range(0x0400, 0x0500))
+        required = (
+            list(range(0x20, 0x7F))
+            + list(range(0x0400, 0x0500))
+            + list(PUNCTUATION)
+        )
         missing = [codepoint for codepoint in required if codepoint not in cmap]
         if missing:
             raise SystemExit("source lacks: " + ", ".join(f"U+{cp:04X}" for cp in missing))
@@ -103,6 +133,8 @@ def main() -> None:
 
 {emit_array("FONT_CYRILLIC", 0x0400, 0x04FF, rows)}
 
+{emit_sparse_array("FONT_PUNCTUATION", PUNCTUATION, rows)}
+
 bool display_font_get_glyph(uint32_t codepoint, const uint16_t **rows)
 {{
     if (rows == NULL) {{
@@ -115,6 +147,15 @@ bool display_font_get_glyph(uint32_t codepoint, const uint16_t **rows)
     if (codepoint >= 0x0400U && codepoint <= 0x04FFU) {{
         *rows = FONT_CYRILLIC[codepoint - 0x0400U];
         return true;
+    }}
+    for (size_t index = 0U;
+         index < sizeof(FONT_PUNCTUATION_CODEPOINTS) /
+                     sizeof(FONT_PUNCTUATION_CODEPOINTS[0]);
+         ++index) {{
+        if (codepoint == FONT_PUNCTUATION_CODEPOINTS[index]) {{
+            *rows = FONT_PUNCTUATION[index];
+            return true;
+        }}
     }}
     *rows = NULL;
     return false;

@@ -43,3 +43,11 @@ target_include_directories(test_display_layout PRIVATE
 )
 project_apply_compile_policy(test_display_layout)
 add_test(NAME display_layout COMMAND test_display_layout)
+
+add_executable(test_display_lifecycle
+    test_display_lifecycle.c
+    ${DISPLAY_DIR}/display_lifecycle.c
+)
+target_include_directories(test_display_lifecycle PRIVATE ${DISPLAY_DIR})
+project_apply_compile_policy(test_display_lifecycle)
+add_test(NAME display_lifecycle COMMAND test_display_lifecycle)

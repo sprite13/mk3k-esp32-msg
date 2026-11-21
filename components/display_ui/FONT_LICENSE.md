@@ -5,12 +5,24 @@
 `ffebf8c1ee449e544955a7e813c54f9b73848eac`. The source TTF must have SHA-256
 `d9e2b23d19f8230be7146f409a52b1d23117e635e28f2e2892cf91b7382f325b`.
 
-The generator uses Pillow 10.2.0 with a 16-pixel FreeType size, baseline 16,
-and a fixed grayscale threshold of 128. Outlines larger than a cell are scaled
+The generator uses CPython 3.12 and dependencies pinned in
+`tools/requirements.txt`, with a 16-pixel FreeType size, baseline 16, and a
+fixed grayscale threshold of 128. Outlines larger than a cell are scaled
 proportionally with Pillow's LANCZOS resampler instead of being clipped. The
-generator rejects a source missing any
-printable ASCII code point (`U+0020..U+007E`) or any Cyrillic code point
-(`U+0400..U+04FF`), and rejects non-space glyphs that rasterize blank.
+generator rejects a source missing printable ASCII (`U+0020..U+007E`),
+Cyrillic (`U+0400..U+04FF`), or the 20 punctuation code points preserved by the
+notification normalizer, and rejects non-space glyphs that rasterize blank.
 
-Noto Sans Mono is Copyright 2015-2021 Google LLC and is licensed under the
-[SIL Open Font License 1.1](https://openfontlicense.org/open-font-license-official-text/).
+Regenerate from the project root in a clean environment:
+
+```bash
+python3.12 -m venv /tmp/m5-display-font-venv
+/tmp/m5-display-font-venv/bin/pip install \
+  --requirement components/display_ui/tools/requirements.txt
+/tmp/m5-display-font-venv/bin/python \
+  components/display_ui/tools/generate_font.py \
+  --output components/display_ui/font_12x20_cyrillic.c
+```
+
+Noto Sans Mono is Copyright 2015-2021 Google LLC and is licensed under the SIL
+Open Font License 1.1. The complete license is bundled in `OFL-1.1.txt`.
