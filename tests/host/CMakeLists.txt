@@ -51,3 +51,18 @@ add_executable(test_display_lifecycle
 target_include_directories(test_display_lifecycle PRIVATE ${DISPLAY_DIR})
 project_apply_compile_policy(test_display_lifecycle)
 add_test(NAME display_lifecycle COMMAND test_display_lifecycle)
+
+set(ANCS_DIR ${CMAKE_CURRENT_LIST_DIR}/../../components/ancs_client)
+add_executable(test_ancs_parser
+    test_ancs_parser.c
+    ${ANCS_DIR}/ancs_parser.c
+    ${ANCS_DIR}/ancs_request_queue.c
+)
+target_include_directories(test_ancs_parser PRIVATE
+    ${ANCS_DIR}/internal_include
+    ${ANCS_DIR}/include
+    ${CORE_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/stubs
+)
+project_apply_compile_policy(test_ancs_parser)
+add_test(NAME ancs_parser COMMAND test_ancs_parser)

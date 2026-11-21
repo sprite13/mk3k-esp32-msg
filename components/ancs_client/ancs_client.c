@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "ancs_parser.h"
+#include "ancs_request_queue.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "host/ble_gap.h"
@@ -23,7 +24,6 @@
 #include "services/gap/ble_svc_gap.h"
 
 #define ANCS_DEVICE_NAME "M5 ANCS"
-#define ANCS_UID_QUEUE_CAPACITY 8U
 #define ANCS_RECONNECT_INITIAL_MS 1000U
 #define ANCS_RECONNECT_MAX_MS 30000U
 #define ANCS_NOTIFICATION_SOURCE_LENGTH 8U
@@ -77,12 +77,10 @@ typedef struct {
     struct ble_npl_event forget_event;
     discovery_handles_t gatt;
     discovery_handles_t ancs;
-    uint32_t uid_queue[ANCS_UID_QUEUE_CAPACITY];
+    ancs_request_queue_t request_queue;
     uint32_t active_uid;
     uint32_t reconnect_delay_ms;
     uint16_t conn_handle;
-    uint8_t uid_queue_head;
-    uint8_t uid_queue_count;
     uint8_t own_addr_type;
     uint8_t descriptor_step;
     uint8_t subscription_step;
@@ -138,8 +136,7 @@ static void reset_requests(void)
         ancs_parser_cancel(&s_client.parser, s_client.active_uid);
     }
     s_client.active_uid_valid = false;
-    s_client.uid_queue_head = 0U;
-    s_client.uid_queue_count = 0U;
+    ancs_request_queue_init(&s_client.request_queue);
 }
 
 static void reset_discovery(void)
@@ -178,75 +175,30 @@ static void fail_connection(const char *operation, int rc)
     }
 }
 
-static bool queue_contains(uint32_t uid)
-{
-    if (s_client.active_uid_valid && s_client.active_uid == uid) {
-        return true;
-    }
-    for (uint8_t index = 0U; index < s_client.uid_queue_count; ++index) {
-        const uint8_t slot = (uint8_t)((s_client.uid_queue_head + index) %
-                                       ANCS_UID_QUEUE_CAPACITY);
-        if (s_client.uid_queue[slot] == uid) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void queue_push(uint32_t uid)
 {
-    if (queue_contains(uid)) {
-        return;
-    }
-    if (s_client.uid_queue_count == ANCS_UID_QUEUE_CAPACITY) {
+    if (!ancs_request_queue_push(&s_client.request_queue, uid)) {
         ESP_LOGW(TAG, "notification request queue full; dropping UID %" PRIu32,
                  uid);
-        return;
     }
-    const uint8_t slot = (uint8_t)((s_client.uid_queue_head +
-                                    s_client.uid_queue_count) %
-                                   ANCS_UID_QUEUE_CAPACITY);
-    s_client.uid_queue[slot] = uid;
-    s_client.uid_queue_count++;
 }
 
 static bool queue_pop(uint32_t *uid)
 {
-    if (s_client.uid_queue_count == 0U) {
-        return false;
-    }
-    *uid = s_client.uid_queue[s_client.uid_queue_head];
-    s_client.uid_queue_head = (uint8_t)((s_client.uid_queue_head + 1U) %
-                                        ANCS_UID_QUEUE_CAPACITY);
-    s_client.uid_queue_count--;
-    return true;
+    return ancs_request_queue_pop(&s_client.request_queue, uid);
 }
 
 static void queue_remove(uint32_t uid)
 {
-    uint32_t retained[ANCS_UID_QUEUE_CAPACITY];
-    uint8_t retained_count = 0U;
-    uint32_t queued_uid = 0U;
-
-    while (queue_pop(&queued_uid)) {
-        if (queued_uid != uid) {
-            retained[retained_count++] = queued_uid;
-        }
-    }
-    for (uint8_t index = 0U; index < retained_count; ++index) {
-        queue_push(retained[index]);
-    }
+    (void)ancs_request_queue_remove(&s_client.request_queue, uid);
 }
 
 static void parser_notification(const notification_t *notification, void *ctx)
 {
     (void)ctx;
-    ble_npl_callout_stop(&s_client.parser_timeout);
-    s_client.active_uid_valid = false;
     if (s_client.config.on_notification != NULL) {
         s_client.config.on_notification(notification, s_client.config.ctx);
     }
-    start_next_request();
 }
 
 static int request_write_complete(uint16_t conn_handle,
@@ -314,6 +266,17 @@ static void start_next_request(void)
     }
 }
 
+static void abort_active_request_and_advance(void)
+{
+    if (!s_client.active_uid_valid) {
+        return;
+    }
+    ble_npl_callout_stop(&s_client.parser_timeout);
+    ancs_parser_cancel(&s_client.parser, s_client.active_uid);
+    s_client.active_uid_valid = false;
+    start_next_request();
+}
+
 static void parser_timeout_event(struct ble_npl_event *event)
 {
     (void)event;
@@ -324,8 +287,7 @@ static void parser_timeout_event(struct ble_npl_event *event)
     if (!ancs_parser_is_pending(&s_client.parser)) {
         ESP_LOGW(TAG, "attribute response timed out for UID %" PRIu32,
                  s_client.active_uid);
-        s_client.active_uid_valid = false;
-        start_next_request();
+        abort_active_request_and_advance();
     }
 }
 
@@ -630,10 +592,7 @@ static void handle_notification_source(const struct os_mbuf *om)
     if (packet[0] == ANCS_EVENT_REMOVED) {
         queue_remove(uid);
         if (s_client.active_uid_valid && s_client.active_uid == uid) {
-            ble_npl_callout_stop(&s_client.parser_timeout);
-            ancs_parser_cancel(&s_client.parser, uid);
-            s_client.active_uid_valid = false;
-            start_next_request();
+            abort_active_request_and_advance();
         }
     } else if (packet[0] == ANCS_EVENT_ADDED ||
                packet[0] == ANCS_EVENT_MODIFIED) {
@@ -648,23 +607,29 @@ static void handle_data_source(const struct os_mbuf *om)
     int offset = 0;
     const int length = om == NULL ? 0 : OS_MBUF_PKTLEN(om);
 
+    if (length <= 0) {
+        ESP_LOGW(TAG, "discarding empty Data Source mbuf");
+        abort_active_request_and_advance();
+        return;
+    }
+
     while (offset < length && s_client.active_uid_valid) {
         const int remaining = length - offset;
         const int chunk = remaining < (int)sizeof(fragment) ? remaining :
                                                                     (int)sizeof(fragment);
         if (os_mbuf_copydata(om, offset, chunk, fragment) != 0) {
-            ancs_parser_cancel(&s_client.parser, s_client.active_uid);
-            s_client.active_uid_valid = false;
             ESP_LOGW(TAG, "discarding malformed Data Source mbuf");
+            abort_active_request_and_advance();
             return;
         }
         ancs_parser_feed(&s_client.parser, fragment, (size_t)chunk, now_ms());
         offset += chunk;
+        if (!ancs_parser_is_pending(&s_client.parser)) {
+            break;
+        }
     }
     if (s_client.active_uid_valid && !ancs_parser_is_pending(&s_client.parser)) {
-        ble_npl_callout_stop(&s_client.parser_timeout);
-        s_client.active_uid_valid = false;
-        start_next_request();
+        abort_active_request_and_advance();
     }
 }
 

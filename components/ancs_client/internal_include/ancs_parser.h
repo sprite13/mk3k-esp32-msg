@@ -20,6 +20,7 @@ typedef struct {
     void *callback_ctx;
     uint32_t expected_uid;
     uint32_t deadline_ms;
+    uint32_t generation;
     uint16_t attribute_length;
     uint16_t attribute_offset;
     uint8_t response_header[5];
@@ -29,6 +30,8 @@ typedef struct {
     uint8_t received_mask;
     uint8_t attribute_id;
     ancs_parser_stage_t stage;
+    bool foreign_response;
+    bool resync_expected_header;
     bool pending;
 } ancs_parser_t;
 

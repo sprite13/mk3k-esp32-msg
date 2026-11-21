@@ -28,6 +28,8 @@ static void parser_reset_response(ancs_parser_t *parser)
     parser->received_mask = 0U;
     parser->attribute_id = 0U;
     parser->stage = ANCS_PARSER_RESPONSE_HEADER;
+    parser->foreign_response = false;
+    parser->resync_expected_header = false;
 }
 
 static void parser_drop(ancs_parser_t *parser)
@@ -58,15 +60,17 @@ static char *attribute_destination(ancs_parser_t *parser, uint8_t id,
     }
 }
 
-static void finish_attribute(ancs_parser_t *parser)
+static bool finish_attribute(ancs_parser_t *parser)
 {
     size_t capacity = 0U;
     char *destination = attribute_destination(parser, parser->attribute_id,
                                               &capacity);
 
     (void)capacity;
-    if (destination != NULL) {
+    if (destination != NULL && !parser->foreign_response) {
         destination[parser->attribute_length] = '\0';
+    }
+    if (destination != NULL) {
         parser->received_mask |= (uint8_t)(1U << parser->attribute_id);
     }
 
@@ -75,67 +79,102 @@ static void finish_attribute(ancs_parser_t *parser)
     parser->stage = ANCS_PARSER_ATTRIBUTE_HEADER;
 
     if (parser->received_mask == ANCS_REQUESTED_ATTRIBUTE_MASK) {
+        if (parser->foreign_response) {
+            parser_reset_response(parser);
+            parser->resync_expected_header = true;
+            return false;
+        }
         parser->pending = false;
         if (parser->callback != NULL) {
             parser->callback(&parser->notification, parser->callback_ctx);
         }
+        return true;
     }
+    return false;
 }
 
-static void consume_response_header(ancs_parser_t *parser, uint8_t byte)
+static bool consume_response_header(ancs_parser_t *parser, uint8_t byte)
 {
+    if (parser->resync_expected_header) {
+        const uint8_t expected[] = {
+            ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES,
+            (uint8_t)(parser->expected_uid & 0xffU),
+            (uint8_t)((parser->expected_uid >> 8U) & 0xffU),
+            (uint8_t)((parser->expected_uid >> 16U) & 0xffU),
+            (uint8_t)((parser->expected_uid >> 24U) & 0xffU),
+        };
+
+        if (byte == expected[parser->response_header_length]) {
+            parser->response_header_length++;
+            if (parser->response_header_length == sizeof(expected)) {
+                parser->response_header_length = 0U;
+                parser->resync_expected_header = false;
+                parser->stage = ANCS_PARSER_ATTRIBUTE_HEADER;
+            }
+        } else {
+            parser->response_header_length =
+                byte == ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES ? 1U : 0U;
+        }
+        return false;
+    }
+
     parser->response_header[parser->response_header_length++] = byte;
     if (parser->response_header_length != sizeof(parser->response_header)) {
-        return;
+        return false;
     }
 
-    if (parser->response_header[0] != ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES ||
-        read_le32(&parser->response_header[1]) != parser->expected_uid) {
+    if (parser->response_header[0] != ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES) {
         parser_drop(parser);
-        return;
+        return true;
     }
 
+    parser->foreign_response =
+        read_le32(&parser->response_header[1]) != parser->expected_uid;
     parser->stage = ANCS_PARSER_ATTRIBUTE_HEADER;
+    return false;
 }
 
-static void consume_attribute_header(ancs_parser_t *parser, uint8_t byte)
+static bool consume_attribute_header(ancs_parser_t *parser, uint8_t byte)
 {
     size_t capacity = 0U;
 
     parser->attribute_header[parser->attribute_header_length++] = byte;
     if (parser->attribute_header_length != sizeof(parser->attribute_header)) {
-        return;
+        return false;
     }
 
     parser->attribute_id = parser->attribute_header[0];
     parser->attribute_length = (uint16_t)parser->attribute_header[1] |
                                ((uint16_t)parser->attribute_header[2] << 8U);
     (void)attribute_destination(parser, parser->attribute_id, &capacity);
-    if (capacity > 0U && parser->attribute_length >= capacity) {
+    if (!parser->foreign_response && capacity > 0U &&
+        parser->attribute_length >= capacity) {
         parser_drop(parser);
-        return;
+        return true;
     }
 
     parser->attribute_offset = 0U;
     parser->stage = ANCS_PARSER_ATTRIBUTE_VALUE;
     if (parser->attribute_length == 0U) {
-        finish_attribute(parser);
+        return finish_attribute(parser);
     }
+    return false;
 }
 
-static void consume_attribute_value(ancs_parser_t *parser, uint8_t byte)
+static bool consume_attribute_value(ancs_parser_t *parser, uint8_t byte)
 {
     size_t capacity = 0U;
     char *destination = attribute_destination(parser, parser->attribute_id,
                                               &capacity);
 
-    if (destination != NULL) {
+    if (destination != NULL && !parser->foreign_response) {
         destination[parser->attribute_offset] = (char)byte;
     }
     parser->attribute_offset++;
     if (parser->attribute_offset == parser->attribute_length) {
-        finish_attribute(parser);
+        return finish_attribute(parser);
     }
+    return false;
 }
 
 void ancs_parser_init(ancs_parser_t *parser, ancs_notification_cb_t callback,
@@ -148,6 +187,7 @@ void ancs_parser_init(ancs_parser_t *parser, ancs_notification_cb_t callback,
 
 void ancs_parser_expect(ancs_parser_t *parser, uint32_t uid, uint32_t now_ms)
 {
+    parser->generation++;
     parser->expected_uid = uid;
     parser->deadline_ms = now_ms + ANCS_PARSER_TIMEOUT_MS;
     parser_reset_response(parser);
@@ -157,21 +197,31 @@ void ancs_parser_expect(ancs_parser_t *parser, uint32_t uid, uint32_t now_ms)
 void ancs_parser_feed(ancs_parser_t *parser, const uint8_t *data, size_t length,
                       uint32_t now_ms)
 {
+    uint32_t generation;
+
     ancs_parser_expire(parser, now_ms);
     if (!parser->pending || data == NULL) {
         return;
     }
 
-    for (size_t index = 0U; index < length && parser->pending; ++index) {
+    generation = parser->generation;
+    for (size_t index = 0U;
+         index < length && parser->pending && parser->generation == generation;
+         ++index) {
+        bool stop = false;
+
         switch (parser->stage) {
         case ANCS_PARSER_RESPONSE_HEADER:
-            consume_response_header(parser, data[index]);
+            stop = consume_response_header(parser, data[index]);
             break;
         case ANCS_PARSER_ATTRIBUTE_HEADER:
-            consume_attribute_header(parser, data[index]);
+            stop = consume_attribute_header(parser, data[index]);
             break;
         case ANCS_PARSER_ATTRIBUTE_VALUE:
-            consume_attribute_value(parser, data[index]);
+            stop = consume_attribute_value(parser, data[index]);
+            break;
+        }
+        if (stop) {
             break;
         }
     }
