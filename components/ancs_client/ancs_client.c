@@ -1,0 +1,965 @@
+#include "ancs_client.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <string.h>
+
+#include "ancs_parser.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "host/ble_gap.h"
+#include "host/ble_gatt.h"
+#include "host/ble_hs.h"
+#include "host/ble_store.h"
+#include "host/util/util.h"
+#include "nimble/ble.h"
+#include "nimble/nimble_npl.h"
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#include "nvs_flash.h"
+#include "os/os_mbuf.h"
+#include "services/gap/ble_svc_gap.h"
+
+#define ANCS_DEVICE_NAME "M5 ANCS"
+#define ANCS_UID_QUEUE_CAPACITY 8U
+#define ANCS_RECONNECT_INITIAL_MS 1000U
+#define ANCS_RECONNECT_MAX_MS 30000U
+#define ANCS_NOTIFICATION_SOURCE_LENGTH 8U
+#define ANCS_EVENT_ADDED 0U
+#define ANCS_EVENT_MODIFIED 1U
+#define ANCS_EVENT_REMOVED 2U
+#define ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES 0U
+#define ANCS_ATTRIBUTE_APP_IDENTIFIER 0U
+#define ANCS_ATTRIBUTE_TITLE 1U
+#define ANCS_ATTRIBUTE_SUBTITLE 2U
+#define ANCS_ATTRIBUTE_MESSAGE 3U
+#define GATT_SERVICE_UUID 0x1801U
+#define GATT_SERVICE_CHANGED_UUID 0x2a05U
+
+static const char *const TAG = "ancs_client";
+
+static const ble_uuid128_t ANCS_SERVICE_UUID = BLE_UUID128_INIT(
+    0xd0, 0x00, 0x2d, 0x12, 0x1e, 0x4b, 0x0f, 0xa4,
+    0x99, 0x4e, 0xce, 0xb5, 0x31, 0xf4, 0x05, 0x79);
+static const ble_uuid128_t ANCS_NOTIFICATION_SOURCE_UUID = BLE_UUID128_INIT(
+    0xbd, 0x1d, 0xa2, 0x99, 0xe6, 0x25, 0x58, 0x8c,
+    0xd9, 0x42, 0x01, 0x63, 0x0d, 0x12, 0xbf, 0x9f);
+static const ble_uuid128_t ANCS_CONTROL_POINT_UUID = BLE_UUID128_INIT(
+    0xd9, 0xd9, 0xaa, 0xfd, 0xbd, 0x9b, 0x21, 0x98,
+    0xa8, 0x49, 0xe1, 0x45, 0xf3, 0xd8, 0xd1, 0x69);
+static const ble_uuid128_t ANCS_DATA_SOURCE_UUID = BLE_UUID128_INIT(
+    0xfb, 0x7b, 0x7c, 0xce, 0x6a, 0xb3, 0x44, 0xbe,
+    0xb5, 0x4b, 0xd6, 0x24, 0xe9, 0xc6, 0xea, 0x22);
+
+typedef struct {
+    uint16_t start_handle;
+    uint16_t end_handle;
+    uint16_t service_changed_handle;
+    uint16_t service_changed_end_handle;
+    uint16_t service_changed_cccd;
+    uint16_t notification_source_def_handle;
+    uint16_t notification_source_handle;
+    uint16_t notification_source_cccd;
+    uint16_t data_source_def_handle;
+    uint16_t data_source_handle;
+    uint16_t data_source_cccd;
+    uint16_t control_point_def_handle;
+    uint16_t control_point_handle;
+} discovery_handles_t;
+
+typedef struct {
+    ancs_client_config_t config;
+    ancs_parser_t parser;
+    struct ble_npl_callout parser_timeout;
+    struct ble_npl_callout reconnect;
+    struct ble_npl_event forget_event;
+    discovery_handles_t gatt;
+    discovery_handles_t ancs;
+    uint32_t uid_queue[ANCS_UID_QUEUE_CAPACITY];
+    uint32_t active_uid;
+    uint32_t reconnect_delay_ms;
+    uint16_t conn_handle;
+    uint8_t uid_queue_head;
+    uint8_t uid_queue_count;
+    uint8_t own_addr_type;
+    uint8_t descriptor_step;
+    uint8_t subscription_step;
+    ancs_client_state_t state;
+    bool active_uid_valid;
+    bool started;
+    bool synced;
+    bool forget_requested;
+    bool suppress_adv_complete;
+    bool state_valid;
+} ancs_client_context_t;
+
+static ancs_client_context_t s_client = {
+    .conn_handle = BLE_HS_CONN_HANDLE_NONE,
+    .reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS,
+};
+
+void ble_store_config_init(void);
+
+static int gap_event(struct ble_gap_event *event, void *arg);
+static void start_next_request(void);
+static void discover_ancs_service(void);
+
+static uint32_t now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000LL);
+}
+
+static uint32_t read_le32(const uint8_t *value)
+{
+    return (uint32_t)value[0] |
+           ((uint32_t)value[1] << 8U) |
+           ((uint32_t)value[2] << 16U) |
+           ((uint32_t)value[3] << 24U);
+}
+
+static void emit_state(ancs_client_state_t state)
+{
+    if (s_client.state_valid && s_client.state == state) {
+        return;
+    }
+    s_client.state = state;
+    s_client.state_valid = true;
+    if (s_client.config.on_state != NULL) {
+        s_client.config.on_state(state, s_client.config.ctx);
+    }
+}
+
+static void reset_requests(void)
+{
+    ble_npl_callout_stop(&s_client.parser_timeout);
+    if (s_client.active_uid_valid) {
+        ancs_parser_cancel(&s_client.parser, s_client.active_uid);
+    }
+    s_client.active_uid_valid = false;
+    s_client.uid_queue_head = 0U;
+    s_client.uid_queue_count = 0U;
+}
+
+static void reset_discovery(void)
+{
+    memset(&s_client.gatt, 0, sizeof(s_client.gatt));
+    memset(&s_client.ancs, 0, sizeof(s_client.ancs));
+    s_client.descriptor_step = 0U;
+    s_client.subscription_step = 0U;
+}
+
+static uint16_t ancs_characteristic_end(uint16_t value_handle)
+{
+    uint16_t end_handle = s_client.ancs.end_handle;
+    const uint16_t definitions[] = {
+        s_client.ancs.notification_source_def_handle,
+        s_client.ancs.data_source_def_handle,
+        s_client.ancs.control_point_def_handle,
+    };
+
+    for (size_t index = 0U; index < sizeof(definitions) / sizeof(definitions[0]);
+         ++index) {
+        if (definitions[index] > value_handle &&
+            (uint16_t)(definitions[index] - 1U) < end_handle) {
+            end_handle = (uint16_t)(definitions[index] - 1U);
+        }
+    }
+    return end_handle;
+}
+
+static void fail_connection(const char *operation, int rc)
+{
+    ESP_LOGE(TAG, "%s failed: rc=%d", operation, rc);
+    emit_state(ANCS_CLIENT_ERROR);
+    if (s_client.conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        (void)ble_gap_terminate(s_client.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    }
+}
+
+static bool queue_contains(uint32_t uid)
+{
+    if (s_client.active_uid_valid && s_client.active_uid == uid) {
+        return true;
+    }
+    for (uint8_t index = 0U; index < s_client.uid_queue_count; ++index) {
+        const uint8_t slot = (uint8_t)((s_client.uid_queue_head + index) %
+                                       ANCS_UID_QUEUE_CAPACITY);
+        if (s_client.uid_queue[slot] == uid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void queue_push(uint32_t uid)
+{
+    if (queue_contains(uid)) {
+        return;
+    }
+    if (s_client.uid_queue_count == ANCS_UID_QUEUE_CAPACITY) {
+        ESP_LOGW(TAG, "notification request queue full; dropping UID %" PRIu32,
+                 uid);
+        return;
+    }
+    const uint8_t slot = (uint8_t)((s_client.uid_queue_head +
+                                    s_client.uid_queue_count) %
+                                   ANCS_UID_QUEUE_CAPACITY);
+    s_client.uid_queue[slot] = uid;
+    s_client.uid_queue_count++;
+}
+
+static bool queue_pop(uint32_t *uid)
+{
+    if (s_client.uid_queue_count == 0U) {
+        return false;
+    }
+    *uid = s_client.uid_queue[s_client.uid_queue_head];
+    s_client.uid_queue_head = (uint8_t)((s_client.uid_queue_head + 1U) %
+                                        ANCS_UID_QUEUE_CAPACITY);
+    s_client.uid_queue_count--;
+    return true;
+}
+
+static void queue_remove(uint32_t uid)
+{
+    uint32_t retained[ANCS_UID_QUEUE_CAPACITY];
+    uint8_t retained_count = 0U;
+    uint32_t queued_uid = 0U;
+
+    while (queue_pop(&queued_uid)) {
+        if (queued_uid != uid) {
+            retained[retained_count++] = queued_uid;
+        }
+    }
+    for (uint8_t index = 0U; index < retained_count; ++index) {
+        queue_push(retained[index]);
+    }
+}
+
+static void parser_notification(const notification_t *notification, void *ctx)
+{
+    (void)ctx;
+    ble_npl_callout_stop(&s_client.parser_timeout);
+    s_client.active_uid_valid = false;
+    if (s_client.config.on_notification != NULL) {
+        s_client.config.on_notification(notification, s_client.config.ctx);
+    }
+    start_next_request();
+}
+
+static int request_write_complete(uint16_t conn_handle,
+                                  const struct ble_gatt_error *error,
+                                  struct ble_gatt_attr *attr, void *arg)
+{
+    (void)conn_handle;
+    (void)attr;
+    (void)arg;
+    if (error->status != 0) {
+        fail_connection("ANCS control point write", error->status);
+    }
+    return 0;
+}
+
+static void start_next_request(void)
+{
+    uint32_t uid = 0U;
+    uint8_t command[15];
+    size_t offset = 0U;
+    int rc;
+
+    if (s_client.active_uid_valid || s_client.conn_handle == BLE_HS_CONN_HANDLE_NONE ||
+        s_client.ancs.control_point_handle == 0U || !queue_pop(&uid)) {
+        return;
+    }
+
+    command[offset++] = ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES;
+    command[offset++] = (uint8_t)(uid & 0xffU);
+    command[offset++] = (uint8_t)((uid >> 8U) & 0xffU);
+    command[offset++] = (uint8_t)((uid >> 16U) & 0xffU);
+    command[offset++] = (uint8_t)((uid >> 24U) & 0xffU);
+    command[offset++] = ANCS_ATTRIBUTE_APP_IDENTIFIER;
+    command[offset++] = ANCS_ATTRIBUTE_TITLE;
+    command[offset++] = (uint8_t)((NOTIFICATION_TITLE_MAX - 1U) & 0xffU);
+    command[offset++] = (uint8_t)((NOTIFICATION_TITLE_MAX - 1U) >> 8U);
+    command[offset++] = ANCS_ATTRIBUTE_SUBTITLE;
+    command[offset++] = (uint8_t)((NOTIFICATION_SUBTITLE_MAX - 1U) & 0xffU);
+    command[offset++] = (uint8_t)((NOTIFICATION_SUBTITLE_MAX - 1U) >> 8U);
+    command[offset++] = ANCS_ATTRIBUTE_MESSAGE;
+    command[offset++] = (uint8_t)((NOTIFICATION_MESSAGE_MAX - 1U) & 0xffU);
+    command[offset++] = (uint8_t)((NOTIFICATION_MESSAGE_MAX - 1U) >> 8U);
+
+    s_client.active_uid = uid;
+    s_client.active_uid_valid = true;
+    ancs_parser_expect(&s_client.parser, uid, now_ms());
+    rc = ble_npl_callout_reset(&s_client.parser_timeout,
+                               ble_npl_time_ms_to_ticks32(ANCS_PARSER_TIMEOUT_MS));
+    if (rc != 0) {
+        ancs_parser_cancel(&s_client.parser, uid);
+        s_client.active_uid_valid = false;
+        fail_connection("parser timeout scheduling", rc);
+        return;
+    }
+
+    rc = ble_gattc_write_flat(s_client.conn_handle,
+                              s_client.ancs.control_point_handle,
+                              command, (uint16_t)offset,
+                              request_write_complete, NULL);
+    if (rc != 0) {
+        ble_npl_callout_stop(&s_client.parser_timeout);
+        ancs_parser_cancel(&s_client.parser, uid);
+        s_client.active_uid_valid = false;
+        fail_connection("ANCS control point write start", rc);
+    }
+}
+
+static void parser_timeout_event(struct ble_npl_event *event)
+{
+    (void)event;
+    if (!s_client.active_uid_valid) {
+        return;
+    }
+    ancs_parser_expire(&s_client.parser, now_ms());
+    if (!ancs_parser_is_pending(&s_client.parser)) {
+        ESP_LOGW(TAG, "attribute response timed out for UID %" PRIu32,
+                 s_client.active_uid);
+        s_client.active_uid_valid = false;
+        start_next_request();
+    }
+}
+
+static int subscribe_write_complete(uint16_t conn_handle,
+                                    const struct ble_gatt_error *error,
+                                    struct ble_gatt_attr *attr, void *arg);
+
+static void write_subscription(uint16_t handle, bool indicate)
+{
+    const uint8_t value[2] = {indicate ? 0U : 1U, indicate ? 2U : 0U};
+    const int rc = ble_gattc_write_flat(s_client.conn_handle, handle,
+                                        value, sizeof(value),
+                                        subscribe_write_complete, NULL);
+    if (rc != 0) {
+        fail_connection("CCCD write start", rc);
+    }
+}
+
+static int ancs_descriptor_discovered(uint16_t conn_handle,
+                                      const struct ble_gatt_error *error,
+                                      uint16_t chr_val_handle,
+                                      const struct ble_gatt_dsc *dsc, void *arg)
+{
+    (void)conn_handle;
+    (void)arg;
+    if (error->status == 0) {
+        if (dsc != NULL &&
+            ble_uuid_cmp(&dsc->uuid.u,
+                         BLE_UUID16_DECLARE(BLE_GATT_DSC_CLT_CFG_UUID16)) == 0) {
+            if (chr_val_handle == s_client.ancs.notification_source_handle) {
+                s_client.ancs.notification_source_cccd = dsc->handle;
+            } else if (chr_val_handle == s_client.ancs.data_source_handle) {
+                s_client.ancs.data_source_cccd = dsc->handle;
+            }
+        }
+        return 0;
+    }
+    if (error->status != BLE_HS_EDONE) {
+        fail_connection("ANCS descriptor discovery", error->status);
+        return 0;
+    }
+    if (s_client.descriptor_step == 1U) {
+        if (s_client.ancs.notification_source_cccd == 0U) {
+            fail_connection("Notification Source CCCD discovery", BLE_HS_ENOENT);
+            return 0;
+        }
+        s_client.descriptor_step = 2U;
+        const int rc = ble_gattc_disc_all_dscs(
+            s_client.conn_handle, s_client.ancs.data_source_handle,
+            ancs_characteristic_end(s_client.ancs.data_source_handle),
+            ancs_descriptor_discovered, NULL);
+        if (rc != 0) {
+            fail_connection("Data Source descriptor discovery start", rc);
+        }
+    } else {
+        if (s_client.ancs.data_source_cccd == 0U) {
+            fail_connection("Data Source CCCD discovery", BLE_HS_ENOENT);
+            return 0;
+        }
+        s_client.subscription_step = 1U;
+        write_subscription(s_client.ancs.notification_source_cccd, false);
+    }
+    return 0;
+}
+
+static int ancs_characteristic_discovered(uint16_t conn_handle,
+                                          const struct ble_gatt_error *error,
+                                          const struct ble_gatt_chr *chr,
+                                          void *arg)
+{
+    (void)conn_handle;
+    (void)arg;
+    if (error->status == 0) {
+        if (chr == NULL) {
+            return 0;
+        }
+        if (ble_uuid_cmp(&chr->uuid.u, &ANCS_NOTIFICATION_SOURCE_UUID.u) == 0 &&
+            (chr->properties & BLE_GATT_CHR_PROP_NOTIFY) != 0U) {
+            s_client.ancs.notification_source_def_handle = chr->def_handle;
+            s_client.ancs.notification_source_handle = chr->val_handle;
+        } else if (ble_uuid_cmp(&chr->uuid.u, &ANCS_DATA_SOURCE_UUID.u) == 0 &&
+                   (chr->properties & BLE_GATT_CHR_PROP_NOTIFY) != 0U) {
+            s_client.ancs.data_source_def_handle = chr->def_handle;
+            s_client.ancs.data_source_handle = chr->val_handle;
+        } else if (ble_uuid_cmp(&chr->uuid.u, &ANCS_CONTROL_POINT_UUID.u) == 0 &&
+                   (chr->properties & BLE_GATT_CHR_PROP_WRITE) != 0U) {
+            s_client.ancs.control_point_def_handle = chr->def_handle;
+            s_client.ancs.control_point_handle = chr->val_handle;
+        }
+        return 0;
+    }
+    if (error->status != BLE_HS_EDONE) {
+        fail_connection("ANCS characteristic discovery", error->status);
+        return 0;
+    }
+    if (s_client.ancs.notification_source_handle == 0U ||
+        s_client.ancs.data_source_handle == 0U ||
+        s_client.ancs.control_point_handle == 0U) {
+        fail_connection("required ANCS characteristic discovery", BLE_HS_ENOENT);
+        return 0;
+    }
+    s_client.descriptor_step = 1U;
+    const int rc = ble_gattc_disc_all_dscs(
+        s_client.conn_handle, s_client.ancs.notification_source_handle,
+        ancs_characteristic_end(s_client.ancs.notification_source_handle),
+        ancs_descriptor_discovered, NULL);
+    if (rc != 0) {
+        fail_connection("ANCS descriptor discovery start", rc);
+    }
+    return 0;
+}
+
+static int ancs_service_discovered(uint16_t conn_handle,
+                                   const struct ble_gatt_error *error,
+                                   const struct ble_gatt_svc *svc, void *arg)
+{
+    (void)conn_handle;
+    (void)arg;
+    if (error->status == 0) {
+        if (svc != NULL) {
+            s_client.ancs.start_handle = svc->start_handle;
+            s_client.ancs.end_handle = svc->end_handle;
+        }
+        return 0;
+    }
+    if (error->status != BLE_HS_EDONE) {
+        fail_connection("ANCS service discovery", error->status);
+        return 0;
+    }
+    if (s_client.ancs.start_handle == 0U) {
+        fail_connection("ANCS service discovery", BLE_HS_ENOENT);
+        return 0;
+    }
+    const int rc = ble_gattc_disc_all_chrs(s_client.conn_handle,
+                                            s_client.ancs.start_handle,
+                                            s_client.ancs.end_handle,
+                                            ancs_characteristic_discovered,
+                                            NULL);
+    if (rc != 0) {
+        fail_connection("ANCS characteristic discovery start", rc);
+    }
+    return 0;
+}
+
+static void discover_ancs_service(void)
+{
+    memset(&s_client.ancs, 0, sizeof(s_client.ancs));
+    reset_requests();
+    const int rc = ble_gattc_disc_svc_by_uuid(s_client.conn_handle,
+                                               &ANCS_SERVICE_UUID.u,
+                                               ancs_service_discovered, NULL);
+    if (rc != 0) {
+        fail_connection("ANCS service discovery start", rc);
+    }
+}
+
+static int service_changed_descriptor_discovered(
+    uint16_t conn_handle, const struct ble_gatt_error *error,
+    uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg)
+{
+    (void)conn_handle;
+    (void)arg;
+    if (error->status == 0) {
+        if (dsc != NULL && chr_val_handle == s_client.gatt.service_changed_handle &&
+            ble_uuid_cmp(&dsc->uuid.u,
+                         BLE_UUID16_DECLARE(BLE_GATT_DSC_CLT_CFG_UUID16)) == 0) {
+            s_client.gatt.service_changed_cccd = dsc->handle;
+        }
+        return 0;
+    }
+    if (error->status != BLE_HS_EDONE) {
+        fail_connection("Service Changed descriptor discovery", error->status);
+        return 0;
+    }
+    if (s_client.gatt.service_changed_cccd == 0U) {
+        fail_connection("Service Changed CCCD discovery", BLE_HS_ENOENT);
+        return 0;
+    }
+    s_client.subscription_step = 0U;
+    write_subscription(s_client.gatt.service_changed_cccd, true);
+    return 0;
+}
+
+static int service_changed_characteristic_discovered(
+    uint16_t conn_handle, const struct ble_gatt_error *error,
+    const struct ble_gatt_chr *chr, void *arg)
+{
+    (void)conn_handle;
+    (void)arg;
+    if (error->status == 0) {
+        if (chr != NULL) {
+            if (ble_uuid_cmp(&chr->uuid.u,
+                             BLE_UUID16_DECLARE(GATT_SERVICE_CHANGED_UUID)) == 0 &&
+                (chr->properties & BLE_GATT_CHR_PROP_INDICATE) != 0U) {
+                s_client.gatt.service_changed_handle = chr->val_handle;
+                s_client.gatt.service_changed_end_handle =
+                    s_client.gatt.end_handle;
+            } else if (s_client.gatt.service_changed_handle != 0U &&
+                       chr->def_handle > s_client.gatt.service_changed_handle &&
+                       (uint16_t)(chr->def_handle - 1U) <
+                           s_client.gatt.service_changed_end_handle) {
+                s_client.gatt.service_changed_end_handle =
+                    (uint16_t)(chr->def_handle - 1U);
+            }
+        }
+        return 0;
+    }
+    if (error->status != BLE_HS_EDONE) {
+        fail_connection("Service Changed characteristic discovery", error->status);
+        return 0;
+    }
+    if (s_client.gatt.service_changed_handle == 0U) {
+        fail_connection("Service Changed characteristic discovery", BLE_HS_ENOENT);
+        return 0;
+    }
+    const int rc = ble_gattc_disc_all_dscs(s_client.conn_handle,
+                                            s_client.gatt.service_changed_handle,
+                                            s_client.gatt.service_changed_end_handle,
+                                            service_changed_descriptor_discovered,
+                                            NULL);
+    if (rc != 0) {
+        fail_connection("Service Changed descriptor discovery start", rc);
+    }
+    return 0;
+}
+
+static int gatt_service_discovered(uint16_t conn_handle,
+                                   const struct ble_gatt_error *error,
+                                   const struct ble_gatt_svc *svc, void *arg)
+{
+    (void)conn_handle;
+    (void)arg;
+    if (error->status == 0) {
+        if (svc != NULL) {
+            s_client.gatt.start_handle = svc->start_handle;
+            s_client.gatt.end_handle = svc->end_handle;
+        }
+        return 0;
+    }
+    if (error->status != BLE_HS_EDONE) {
+        fail_connection("GATT service discovery", error->status);
+        return 0;
+    }
+    if (s_client.gatt.start_handle == 0U) {
+        fail_connection("GATT service discovery", BLE_HS_ENOENT);
+        return 0;
+    }
+    const int rc = ble_gattc_disc_all_chrs(
+        s_client.conn_handle, s_client.gatt.start_handle, s_client.gatt.end_handle,
+        service_changed_characteristic_discovered, NULL);
+    if (rc != 0) {
+        fail_connection("Service Changed characteristic discovery start", rc);
+    }
+    return 0;
+}
+
+static void begin_discovery(void)
+{
+    reset_discovery();
+    const int rc = ble_gattc_disc_svc_by_uuid(
+        s_client.conn_handle, BLE_UUID16_DECLARE(GATT_SERVICE_UUID),
+        gatt_service_discovered, NULL);
+    if (rc != 0) {
+        fail_connection("GATT service discovery start", rc);
+    }
+}
+
+static int subscribe_write_complete(uint16_t conn_handle,
+                                    const struct ble_gatt_error *error,
+                                    struct ble_gatt_attr *attr, void *arg)
+{
+    (void)conn_handle;
+    (void)attr;
+    (void)arg;
+    if (error->status != 0) {
+        fail_connection("CCCD write", error->status);
+        return 0;
+    }
+    if (s_client.subscription_step == 0U) {
+        discover_ancs_service();
+    } else if (s_client.subscription_step == 1U) {
+        s_client.subscription_step = 2U;
+        write_subscription(s_client.ancs.data_source_cccd, false);
+    } else {
+        s_client.reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
+        emit_state(ANCS_CLIENT_CONNECTED);
+        start_next_request();
+    }
+    return 0;
+}
+
+static void handle_notification_source(const struct os_mbuf *om)
+{
+    uint8_t packet[ANCS_NOTIFICATION_SOURCE_LENGTH];
+    if (om == NULL || OS_MBUF_PKTLEN(om) != sizeof(packet) ||
+        os_mbuf_copydata(om, 0, sizeof(packet), packet) != 0) {
+        ESP_LOGW(TAG, "discarding malformed Notification Source packet");
+        return;
+    }
+
+    const uint32_t uid = read_le32(&packet[4]);
+    if (packet[0] == ANCS_EVENT_REMOVED) {
+        queue_remove(uid);
+        if (s_client.active_uid_valid && s_client.active_uid == uid) {
+            ble_npl_callout_stop(&s_client.parser_timeout);
+            ancs_parser_cancel(&s_client.parser, uid);
+            s_client.active_uid_valid = false;
+            start_next_request();
+        }
+    } else if (packet[0] == ANCS_EVENT_ADDED ||
+               packet[0] == ANCS_EVENT_MODIFIED) {
+        queue_push(uid);
+        start_next_request();
+    }
+}
+
+static void handle_data_source(const struct os_mbuf *om)
+{
+    uint8_t fragment[32];
+    int offset = 0;
+    const int length = om == NULL ? 0 : OS_MBUF_PKTLEN(om);
+
+    while (offset < length && s_client.active_uid_valid) {
+        const int remaining = length - offset;
+        const int chunk = remaining < (int)sizeof(fragment) ? remaining :
+                                                                    (int)sizeof(fragment);
+        if (os_mbuf_copydata(om, offset, chunk, fragment) != 0) {
+            ancs_parser_cancel(&s_client.parser, s_client.active_uid);
+            s_client.active_uid_valid = false;
+            ESP_LOGW(TAG, "discarding malformed Data Source mbuf");
+            return;
+        }
+        ancs_parser_feed(&s_client.parser, fragment, (size_t)chunk, now_ms());
+        offset += chunk;
+    }
+    if (s_client.active_uid_valid && !ancs_parser_is_pending(&s_client.parser)) {
+        ble_npl_callout_stop(&s_client.parser_timeout);
+        s_client.active_uid_valid = false;
+        start_next_request();
+    }
+}
+
+static int advertise(void)
+{
+    struct ble_hs_adv_fields fields = {0};
+    struct ble_gap_adv_params params = {0};
+    const char *name = ble_svc_gap_device_name();
+    int rc;
+
+    if (ble_gap_adv_active()) {
+        return 0;
+    }
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.name = (const uint8_t *)name;
+    fields.name_len = (uint8_t)strlen(name);
+    fields.name_is_complete = 1U;
+    fields.sol_uuids128 = &ANCS_SERVICE_UUID;
+    fields.sol_num_uuids128 = 1U;
+    rc = ble_gap_adv_set_fields(&fields);
+    if (rc != 0) {
+        return rc;
+    }
+    params.conn_mode = BLE_GAP_CONN_MODE_UND;
+    params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    return ble_gap_adv_start(s_client.own_addr_type, NULL, BLE_HS_FOREVER,
+                             &params, gap_event, NULL);
+}
+
+static void schedule_reconnect(void)
+{
+    emit_state(ANCS_CLIENT_RECONNECTING);
+    const int rc = ble_npl_callout_reset(
+        &s_client.reconnect,
+        ble_npl_time_ms_to_ticks32(s_client.reconnect_delay_ms));
+    if (rc != 0) {
+        fail_connection("reconnect scheduling", rc);
+        return;
+    }
+    if (s_client.reconnect_delay_ms < ANCS_RECONNECT_MAX_MS) {
+        uint32_t next = s_client.reconnect_delay_ms * 2U;
+        s_client.reconnect_delay_ms = next > ANCS_RECONNECT_MAX_MS ?
+                                      ANCS_RECONNECT_MAX_MS : next;
+    }
+}
+
+static void reconnect_event(struct ble_npl_event *event)
+{
+    (void)event;
+    const int rc = advertise();
+    if (rc != 0) {
+        ESP_LOGW(TAG, "advertising restart failed: rc=%d", rc);
+        schedule_reconnect();
+    }
+}
+
+static void clear_bonds_and_pair(void)
+{
+    reset_requests();
+    reset_discovery();
+    const int rc = ble_store_clear();
+    if (rc != 0) {
+        fail_connection("bond clear", rc);
+        s_client.forget_requested = false;
+        return;
+    }
+    s_client.forget_requested = false;
+    s_client.reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
+    emit_state(ANCS_CLIENT_PAIRING);
+    const int adv_rc = advertise();
+    if (adv_rc != 0) {
+        fail_connection("pairing advertising start", adv_rc);
+    }
+}
+
+static void forget_event(struct ble_npl_event *event)
+{
+    (void)event;
+    if (s_client.conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        const int rc = ble_gap_terminate(s_client.conn_handle,
+                                         BLE_ERR_REM_USER_CONN_TERM);
+        if (rc != 0) {
+            fail_connection("disconnect for bond reset", rc);
+        }
+        return;
+    }
+    if (ble_gap_adv_active()) {
+        s_client.suppress_adv_complete = true;
+        const int rc = ble_gap_adv_stop();
+        if (rc != 0) {
+            s_client.suppress_adv_complete = false;
+            fail_connection("advertising stop for bond reset", rc);
+            return;
+        }
+    }
+    clear_bonds_and_pair();
+}
+
+static int gap_event(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+    struct ble_gap_conn_desc desc;
+    int rc;
+
+    switch (event->type) {
+    case BLE_GAP_EVENT_CONNECT:
+        if (event->connect.status != 0) {
+            schedule_reconnect();
+            return 0;
+        }
+        s_client.conn_handle = event->connect.conn_handle;
+        s_client.reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
+        rc = ble_gap_security_initiate(s_client.conn_handle);
+        if (rc != 0) {
+            fail_connection("security initiation", rc);
+        }
+        return 0;
+
+    case BLE_GAP_EVENT_DISCONNECT:
+        s_client.conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        reset_requests();
+        reset_discovery();
+        if (s_client.forget_requested) {
+            clear_bonds_and_pair();
+        } else {
+            schedule_reconnect();
+        }
+        return 0;
+
+    case BLE_GAP_EVENT_ADV_COMPLETE:
+        if (s_client.suppress_adv_complete) {
+            s_client.suppress_adv_complete = false;
+            return 0;
+        }
+        if (s_client.conn_handle == BLE_HS_CONN_HANDLE_NONE &&
+            !s_client.forget_requested) {
+            schedule_reconnect();
+        }
+        return 0;
+
+    case BLE_GAP_EVENT_ENC_CHANGE:
+        if (event->enc_change.status != 0) {
+            fail_connection("link encryption", event->enc_change.status);
+            return 0;
+        }
+        begin_discovery();
+        return 0;
+
+    case BLE_GAP_EVENT_NOTIFY_RX:
+        if (event->notify_rx.attr_handle ==
+            s_client.ancs.notification_source_handle) {
+            handle_notification_source(event->notify_rx.om);
+        } else if (event->notify_rx.attr_handle ==
+                   s_client.ancs.data_source_handle) {
+            handle_data_source(event->notify_rx.om);
+        } else if (event->notify_rx.attr_handle ==
+                   s_client.gatt.service_changed_handle) {
+            emit_state(ANCS_CLIENT_RECONNECTING);
+            discover_ancs_service();
+        }
+        return 0;
+
+    case BLE_GAP_EVENT_REPEAT_PAIRING:
+        rc = ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
+        if (rc != 0) {
+            return BLE_GAP_REPEAT_PAIRING_IGNORE;
+        }
+        rc = ble_store_util_delete_peer(&desc.peer_id_addr);
+        return rc == 0 ? BLE_GAP_REPEAT_PAIRING_RETRY :
+                         BLE_GAP_REPEAT_PAIRING_IGNORE;
+
+    case BLE_GAP_EVENT_PASSKEY_ACTION:
+        ESP_LOGW(TAG, "unexpected passkey action %u",
+                 event->passkey.params.action);
+        return 0;
+
+    default:
+        return 0;
+    }
+}
+
+static void host_reset(int reason)
+{
+    ESP_LOGE(TAG, "NimBLE host reset: reason=%d", reason);
+    s_client.synced = false;
+    s_client.conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    reset_requests();
+    reset_discovery();
+    emit_state(ANCS_CLIENT_ERROR);
+}
+
+static void host_sync(void)
+{
+    ble_addr_t peers[1];
+    int peer_count = 0;
+    int rc = ble_hs_util_ensure_addr(0);
+    if (rc != 0) {
+        fail_connection("identity address creation", rc);
+        return;
+    }
+    rc = ble_hs_id_infer_auto(0, &s_client.own_addr_type);
+    if (rc != 0) {
+        fail_connection("identity address selection", rc);
+        return;
+    }
+    rc = ble_store_util_bonded_peers(peers, &peer_count, 1);
+    if (rc != 0) {
+        fail_connection("bond lookup", rc);
+        return;
+    }
+    s_client.synced = true;
+    emit_state(peer_count == 0 ? ANCS_CLIENT_PAIRING :
+                                 ANCS_CLIENT_RECONNECTING);
+    rc = advertise();
+    if (rc != 0) {
+        fail_connection("advertising start", rc);
+    }
+}
+
+static void host_task(void *param)
+{
+    (void)param;
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
+esp_err_t ancs_client_start(const ancs_client_config_t *config)
+{
+    esp_err_t err;
+    int rc;
+
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_client.started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        err = nvs_flash_erase();
+        if (err == ESP_OK) {
+            err = nvs_flash_init();
+        }
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nimble_port_init();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    s_client.config = *config;
+    s_client.conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    s_client.reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
+    ancs_parser_init(&s_client.parser, parser_notification, NULL);
+    ble_hs_cfg.reset_cb = host_reset;
+    ble_hs_cfg.sync_cb = host_sync;
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC |
+                                 BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC |
+                                   BLE_SM_PAIR_KEY_DIST_ID;
+
+    rc = ble_svc_gap_device_name_set(ANCS_DEVICE_NAME);
+    if (rc != 0) {
+        nimble_port_deinit();
+        return ESP_FAIL;
+    }
+    ble_store_config_init();
+    ble_npl_callout_init(&s_client.parser_timeout,
+                         nimble_port_get_dflt_eventq(), parser_timeout_event,
+                         NULL);
+    ble_npl_callout_init(&s_client.reconnect, nimble_port_get_dflt_eventq(),
+                         reconnect_event, NULL);
+    ble_npl_event_init(&s_client.forget_event, forget_event, NULL);
+    s_client.started = true;
+    nimble_port_freertos_init(host_task);
+    return ESP_OK;
+}
+
+esp_err_t ancs_client_forget_bond(void)
+{
+    if (!s_client.started || !s_client.synced) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_client.forget_requested) {
+        return ESP_OK;
+    }
+    s_client.forget_requested = true;
+    ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &s_client.forget_event);
+    return ESP_OK;
+}
