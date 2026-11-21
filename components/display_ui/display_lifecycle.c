@@ -26,6 +26,11 @@ bool display_lifecycle_failed(const display_lifecycle_t *lifecycle)
     return lifecycle != NULL && lifecycle->state == DISPLAY_LIFECYCLE_FAILED;
 }
 
+bool display_lifecycle_healthy(const display_lifecycle_t *lifecycle)
+{
+    return lifecycle != NULL && lifecycle->state == DISPLAY_LIFECYCLE_AWAKE;
+}
+
 void display_lifecycle_mark_awake(display_lifecycle_t *lifecycle)
 {
     if (lifecycle != NULL && lifecycle->state != DISPLAY_LIFECYCLE_FAILED) {
@@ -34,6 +39,11 @@ void display_lifecycle_mark_awake(display_lifecycle_t *lifecycle)
 }
 
 void display_lifecycle_mark_transfer_timeout(display_lifecycle_t *lifecycle)
+{
+    display_lifecycle_mark_failed(lifecycle);
+}
+
+void display_lifecycle_mark_failed(display_lifecycle_t *lifecycle)
 {
     if (lifecycle != NULL) {
         lifecycle->state = DISPLAY_LIFECYCLE_FAILED;

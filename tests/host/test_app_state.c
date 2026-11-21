@@ -28,6 +28,16 @@ static void reduce_type(app_state_t *state, app_event_type_t type,
     app_state_reduce(state, &event, now_us);
 }
 
+static void reduce_reset_result(app_state_t *state, bool success,
+                                int64_t now_us)
+{
+    const app_event_t event = {
+        .type = APP_EVENT_BOND_RESET_RESULT,
+        .data.bond_reset_succeeded = success,
+    };
+    app_state_reduce(state, &event, now_us);
+}
+
 static void test_filters_and_normalizes_notifications(void)
 {
     app_state_t state;
@@ -87,6 +97,7 @@ static void test_long_b_requests_bond_reset_once_per_hold(void)
 
     reduce_type(&state, APP_EVENT_BUTTON_B_DOWN, 100U);
     TEST_CHECK(state.bond_reset_progress_visible);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_HOLDING);
     reduce_type(&state, APP_EVENT_TIMER,
                 100U + APP_BUTTON_B_LONG_HOLD_US - 1U);
     TEST_CHECK(!state.forget_bond_requested);
@@ -94,7 +105,9 @@ static void test_long_b_requests_bond_reset_once_per_hold(void)
     reduce_type(&state, APP_EVENT_TIMER,
                 100U + APP_BUTTON_B_LONG_HOLD_US);
     TEST_CHECK(state.forget_bond_requested);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_REQUESTED);
     TEST_CHECK(app_state_take_forget_bond_request(&state));
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_SUBMITTED);
     TEST_CHECK(!app_state_take_forget_bond_request(&state));
 
     reduce_type(&state, APP_EVENT_TIMER,
@@ -155,6 +168,7 @@ static void test_early_b_release_resets_progress_and_navigates_once(void)
     reduce_type(&state, APP_EVENT_BUTTON_B_UP, 2000101U);
     TEST_CHECK(!state.bond_reset_progress_visible);
     TEST_CHECK(state.bond_reset_progress_percent == 0U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_IDLE);
     TEST_CHECK(notification_queue_current(&state.queue)->uid == 3U);
 
     reduce_type(&state, APP_EVENT_BUTTON_B_UP, 2000102U);
@@ -162,7 +176,7 @@ static void test_early_b_release_resets_progress_and_navigates_once(void)
     TEST_CHECK(!state.forget_bond_requested);
 }
 
-static void test_release_at_threshold_keeps_completion_until_pairing(void)
+static void test_reset_success_completes_only_after_result_until_pairing(void)
 {
     app_state_t state;
     app_state_init(&state);
@@ -173,7 +187,14 @@ static void test_release_at_threshold_keeps_completion_until_pairing(void)
     TEST_CHECK(!state.button_b_is_down);
     TEST_CHECK(state.bond_reset_progress_visible);
     TEST_CHECK(state.bond_reset_progress_percent == 100U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_REQUESTED);
     TEST_CHECK(app_state_take_forget_bond_request(&state));
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_SUBMITTED);
+
+    reduce_reset_result(&state, true,
+                        100U + APP_BUTTON_B_LONG_HOLD_US + 1U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_COMPLETED);
+    TEST_CHECK(state.bond_reset_progress_visible);
 
     reduce_type(&state, APP_EVENT_BUTTON_B_UP,
                 100U + APP_BUTTON_B_LONG_HOLD_US + 1U);
@@ -188,6 +209,54 @@ static void test_release_at_threshold_keeps_completion_until_pairing(void)
                      100U + APP_BUTTON_B_LONG_HOLD_US + 2U);
     TEST_CHECK(!state.bond_reset_progress_visible);
     TEST_CHECK(state.bond_reset_progress_percent == 0U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_IDLE);
+}
+
+static void test_reset_failure_is_bounded_and_can_be_requested_again(void)
+{
+    app_state_t state;
+    app_state_init(&state);
+
+    reduce_type(&state, APP_EVENT_BUTTON_B_DOWN, 10U);
+    reduce_type(&state, APP_EVENT_TIMER,
+                10U + APP_BUTTON_B_LONG_HOLD_US);
+    TEST_CHECK(app_state_take_forget_bond_request(&state));
+    reduce_reset_result(&state, false,
+                        10U + APP_BUTTON_B_LONG_HOLD_US + 1U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_FAILED);
+    TEST_CHECK(state.bond_reset_progress_visible);
+    TEST_CHECK(state.bond_reset_progress_percent == 0U);
+
+    reduce_type(&state, APP_EVENT_TIMER,
+                10U + APP_BUTTON_B_LONG_HOLD_US +
+                    APP_BOND_RESET_FEEDBACK_US);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_FAILED);
+    reduce_type(&state, APP_EVENT_TIMER,
+                10U + APP_BUTTON_B_LONG_HOLD_US + 1U +
+                    APP_BOND_RESET_FEEDBACK_US);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_IDLE);
+    TEST_CHECK(!state.bond_reset_progress_visible);
+
+    reduce_type(&state, APP_EVENT_BUTTON_B_UP,
+                10U + APP_BUTTON_B_LONG_HOLD_US + 2U +
+                    APP_BOND_RESET_FEEDBACK_US);
+    reduce_type(&state, APP_EVENT_BUTTON_B_DOWN, 10000000U);
+    reduce_type(&state, APP_EVENT_TIMER,
+                10000000U + APP_BUTTON_B_LONG_HOLD_US);
+    TEST_CHECK(app_state_take_forget_bond_request(&state));
+    TEST_CHECK(!app_state_take_forget_bond_request(&state));
+}
+
+static void test_display_failure_clears_visible_assumption(void)
+{
+    app_state_t state;
+    app_state_init(&state);
+    reduce_type(&state, APP_EVENT_BUTTON_A, 100U);
+    TEST_CHECK(state.display_awake);
+
+    reduce_type(&state, APP_EVENT_DISPLAY_FAILURE, 101U);
+    TEST_CHECK(!state.display_awake);
+    TEST_CHECK(state.display_deadline_us == 0U);
 }
 
 static void test_display_deadline_and_delayed_processing(void)
@@ -250,7 +319,9 @@ int main(void)
     test_long_b_requests_bond_reset_once_per_hold();
     test_b_hold_progress_milestones();
     test_early_b_release_resets_progress_and_navigates_once();
-    test_release_at_threshold_keeps_completion_until_pairing();
+    test_reset_success_completes_only_after_result_until_pairing();
+    test_reset_failure_is_bounded_and_can_be_requested_again();
+    test_display_failure_clears_visible_assumption();
     test_display_deadline_and_delayed_processing();
     test_connection_state();
     test_battery_voltage_mapping();

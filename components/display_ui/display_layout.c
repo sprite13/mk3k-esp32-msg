@@ -301,20 +301,31 @@ static bool battery_is_low(uint8_t battery_percent)
 
 static bool render_status(display_connection_t connection,
                           uint8_t battery_percent, size_t position,
-                          size_t total, bool bond_reset_progress_visible,
+                          size_t total,
+                          display_bond_reset_state_t bond_reset_state,
                           uint8_t bond_reset_progress_percent, char *status,
                           size_t status_size)
 {
-    if (bond_reset_progress_visible &&
-        !(connection == DISPLAY_CONNECTION_PAIRING &&
-          bond_reset_progress_percent >= 100U)) {
-        if (bond_reset_progress_percent >= 100U) {
-            (void)snprintf(status, status_size, "Сброс выполнен");
-        } else {
+    if (!(connection == DISPLAY_CONNECTION_PAIRING &&
+          bond_reset_state == DISPLAY_BOND_RESET_COMPLETED)) {
+        switch (bond_reset_state) {
+        case DISPLAY_BOND_RESET_HOLDING:
             (void)snprintf(status, status_size, "Сброс связи %u%%",
                            (unsigned int)bond_reset_progress_percent);
+            return true;
+        case DISPLAY_BOND_RESET_REQUESTED:
+            (void)snprintf(status, status_size, "Запрос сброса");
+            return true;
+        case DISPLAY_BOND_RESET_COMPLETED:
+            (void)snprintf(status, status_size, "Сброс выполнен");
+            return true;
+        case DISPLAY_BOND_RESET_FAILED:
+            (void)snprintf(status, status_size, "Ошибка сброса");
+            return true;
+        case DISPLAY_BOND_RESET_NONE:
+        default:
+            break;
         }
-        return true;
     }
 
     const char *battery_prefix = battery_is_low(battery_percent) ? "!" : "";
@@ -340,7 +351,7 @@ static bool render_status(display_connection_t connection,
 void display_render_plan_make(display_connection_t connection, uint8_t battery_percent,
                               size_t position, size_t total,
                               const notification_t *notification,
-                              bool bond_reset_progress_visible,
+                              display_bond_reset_state_t bond_reset_state,
                               uint8_t bond_reset_progress_percent,
                               display_render_plan_t *plan)
 {
@@ -351,7 +362,7 @@ void display_render_plan_make(display_connection_t connection, uint8_t battery_p
 
     char status[64];
     const bool showing_bond_reset = render_status(
-        connection, battery_percent, position, total, bond_reset_progress_visible,
+        connection, battery_percent, position, total, bond_reset_state,
         bond_reset_progress_percent, status, sizeof(status));
     const display_line_style_t status_style =
         showing_bond_reset || battery_is_low(battery_percent) ?

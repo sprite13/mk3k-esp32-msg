@@ -150,17 +150,17 @@ static void test_low_battery_render_plan(void)
 {
     display_render_plan_t plan;
     display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 15U, 3U, 5U, NULL,
-                             false, 0U, &plan);
+                             DISPLAY_BOND_RESET_NONE, 0U, &plan);
     TEST_CHECK(plan.lines[0].style == DISPLAY_LINE_WARNING);
     check_render_line(&plan, 0U, "Подключено !15% 3/5");
 
     display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 16U, 3U, 5U, NULL,
-                             false, 0U, &plan);
+                             DISPLAY_BOND_RESET_NONE, 0U, &plan);
     TEST_CHECK(plan.lines[0].style == DISPLAY_LINE_STATUS);
     check_render_line(&plan, 0U, "Подключено 16% 3/5");
 
     display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, UINT8_MAX, 3U, 5U,
-                             NULL, false, 0U, &plan);
+                             NULL, DISPLAY_BOND_RESET_NONE, 0U, &plan);
     TEST_CHECK(plan.lines[0].style == DISPLAY_LINE_STATUS);
     check_render_line(&plan, 0U, "Подключено --% 3/5");
 }
@@ -170,7 +170,7 @@ static void test_empty_notification_render_plan(void)
     const notification_t notification = {0};
     display_render_plan_t plan;
     display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 80U, 1U, 1U,
-                             &notification, false, 0U, &plan);
+                             &notification, DISPLAY_BOND_RESET_NONE, 0U, &plan);
 
     TEST_CHECK(plan.lines[1].style == DISPLAY_LINE_BODY);
     TEST_CHECK(plan.lines[2].style == DISPLAY_LINE_BODY);
@@ -187,7 +187,7 @@ static void test_normal_notification_render_plan(void)
     strcpy(notification.message, "Message body");
     display_render_plan_t plan;
     display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 80U, 2U, 5U,
-                             &notification, false, 0U, &plan);
+                             &notification, DISPLAY_BOND_RESET_NONE, 0U, &plan);
 
     TEST_CHECK(plan.lines[1].style == DISPLAY_LINE_TITLE);
     TEST_CHECK(plan.lines[2].style == DISPLAY_LINE_SUBTITLE);
@@ -206,11 +206,13 @@ static void test_bond_reset_progress_preserves_notification_layout(void)
     display_render_plan_t plan;
 
     display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 80U, 2U, 5U,
-                             &notification, true, 0U, &plan);
+                             &notification, DISPLAY_BOND_RESET_HOLDING, 0U,
+                             &plan);
     check_render_line(&plan, 0U, "Сброс связи 0%");
 
     display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 80U, 2U, 5U,
-                             &notification, true, 40U, &plan);
+                             &notification, DISPLAY_BOND_RESET_HOLDING, 40U,
+                             &plan);
     TEST_CHECK(plan.lines[0].style == DISPLAY_LINE_WARNING);
     check_render_line(&plan, 0U, "Сброс связи 40%");
     check_render_line(&plan, 1U, "Title");
@@ -218,12 +220,24 @@ static void test_bond_reset_progress_preserves_notification_layout(void)
     check_render_line(&plan, 3U, "Message body");
 
     display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 80U, 2U, 5U,
-                             &notification, true, 100U, &plan);
+                             &notification, DISPLAY_BOND_RESET_REQUESTED, 100U,
+                             &plan);
     TEST_CHECK(plan.lines[0].style == DISPLAY_LINE_WARNING);
+    check_render_line(&plan, 0U, "Запрос сброса");
+
+    display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 80U, 2U, 5U,
+                             &notification, DISPLAY_BOND_RESET_COMPLETED, 100U,
+                             &plan);
     check_render_line(&plan, 0U, "Сброс выполнен");
 
+    display_render_plan_make(DISPLAY_CONNECTION_CONNECTED, 80U, 2U, 5U,
+                             &notification, DISPLAY_BOND_RESET_FAILED, 0U,
+                             &plan);
+    check_render_line(&plan, 0U, "Ошибка сброса");
+
     display_render_plan_make(DISPLAY_CONNECTION_PAIRING, 80U, 2U, 5U,
-                             &notification, true, 100U, &plan);
+                             &notification, DISPLAY_BOND_RESET_COMPLETED, 100U,
+                             &plan);
     check_render_line(&plan, 0U, "Сопряжение 80% 2/5");
     check_render_line(&plan, 2U, "Ожидание iPhone");
 }

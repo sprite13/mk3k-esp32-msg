@@ -29,6 +29,13 @@ static void evaluate_deadlines(app_state_t *state, int64_t now_us)
         state->display_awake = false;
     }
 
+    if (state->bond_reset_state == APP_BOND_RESET_FAILED &&
+        now_us >= state->bond_reset_feedback_deadline_us) {
+        state->bond_reset_state = APP_BOND_RESET_IDLE;
+        state->bond_reset_progress_visible = false;
+        state->bond_reset_feedback_deadline_us = 0;
+    }
+
     if (state->button_b_is_down && !state->button_b_long_handled &&
         now_us >= state->button_b_down_us) {
         const int64_t elapsed_us = now_us - state->button_b_down_us;
@@ -36,6 +43,7 @@ static void evaluate_deadlines(app_state_t *state, int64_t now_us)
             state->bond_reset_progress_percent = 100U;
             state->button_b_long_handled = true;
             state->forget_bond_requested = true;
+            state->bond_reset_state = APP_BOND_RESET_REQUESTED;
             wake_display(state, now_us);
         } else {
             state->bond_reset_progress_percent = (uint8_t)(
@@ -53,10 +61,12 @@ void app_state_init(app_state_t *state)
     state->notification_accepted = false;
     state->button_b_is_down = false;
     state->button_b_long_handled = false;
+    state->bond_reset_state = APP_BOND_RESET_IDLE;
     state->bond_reset_progress_visible = false;
     state->bond_reset_progress_percent = 0U;
     state->display_deadline_us = 0;
     state->button_b_down_us = 0;
+    state->bond_reset_feedback_deadline_us = 0;
 }
 
 void app_state_reduce(app_state_t *state, const app_event_t *event,
@@ -89,8 +99,10 @@ void app_state_reduce(app_state_t *state, const app_event_t *event,
         if (!state->button_b_is_down) {
             state->button_b_is_down = true;
             state->button_b_long_handled = false;
+            state->bond_reset_state = APP_BOND_RESET_HOLDING;
             state->bond_reset_progress_visible = true;
             state->bond_reset_progress_percent = 0U;
+            state->bond_reset_feedback_deadline_us = 0;
             state->button_b_down_us = now_us;
             wake_display(state, now_us);
         }
@@ -100,6 +112,8 @@ void app_state_reduce(app_state_t *state, const app_event_t *event,
             (void)notification_queue_newer(&state->queue);
             state->bond_reset_progress_visible = false;
             state->bond_reset_progress_percent = 0U;
+            state->bond_reset_state = APP_BOND_RESET_IDLE;
+            state->bond_reset_feedback_deadline_us = 0;
             wake_display(state, now_us);
         }
         state->button_b_is_down = false;
@@ -113,12 +127,34 @@ void app_state_reduce(app_state_t *state, const app_event_t *event,
             event->data.connection <= APP_CONNECTION_ERROR) {
             state->connection = event->data.connection;
             if (state->connection == APP_CONNECTION_PAIRING &&
-                state->bond_reset_progress_percent >= 100U) {
+                state->bond_reset_state == APP_BOND_RESET_COMPLETED) {
                 state->bond_reset_progress_visible = false;
                 state->bond_reset_progress_percent = 0U;
+                state->bond_reset_state = APP_BOND_RESET_IDLE;
+                state->bond_reset_feedback_deadline_us = 0;
             }
             wake_display(state, now_us);
         }
+        break;
+    case APP_EVENT_BOND_RESET_RESULT:
+        if (state->bond_reset_state == APP_BOND_RESET_SUBMITTED) {
+            state->bond_reset_state = event->data.bond_reset_succeeded ?
+                                          APP_BOND_RESET_COMPLETED :
+                                          APP_BOND_RESET_FAILED;
+            state->bond_reset_progress_visible = true;
+            if (event->data.bond_reset_succeeded) {
+                state->bond_reset_feedback_deadline_us = 0;
+            } else {
+                state->bond_reset_progress_percent = 0U;
+                state->bond_reset_feedback_deadline_us =
+                    now_us + APP_BOND_RESET_FEEDBACK_US;
+            }
+            wake_display(state, now_us);
+        }
+        break;
+    case APP_EVENT_DISPLAY_FAILURE:
+        state->display_awake = false;
+        state->display_deadline_us = 0;
         break;
     }
 }
@@ -129,6 +165,7 @@ bool app_state_take_forget_bond_request(app_state_t *state)
         return false;
     }
     state->forget_bond_requested = false;
+    state->bond_reset_state = APP_BOND_RESET_SUBMITTED;
     return true;
 }
 

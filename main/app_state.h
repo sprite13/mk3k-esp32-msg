@@ -8,6 +8,7 @@
 
 #define APP_DISPLAY_TIMEOUT_US INT64_C(10000000)
 #define APP_BUTTON_B_LONG_HOLD_US INT64_C(5000000)
+#define APP_BOND_RESET_FEEDBACK_US INT64_C(3000000)
 #define APP_BATTERY_PERCENT_UNKNOWN UINT8_MAX
 
 typedef enum {
@@ -23,6 +24,8 @@ typedef enum {
     /* Evaluates monotonic display and B-hold deadlines. */
     APP_EVENT_TIMER,
     APP_EVENT_CONNECTION_STATE,
+    APP_EVENT_BOND_RESET_RESULT,
+    APP_EVENT_DISPLAY_FAILURE,
 } app_event_type_t;
 
 typedef enum {
@@ -32,11 +35,21 @@ typedef enum {
     APP_CONNECTION_ERROR,
 } app_connection_state_t;
 
+typedef enum {
+    APP_BOND_RESET_IDLE,
+    APP_BOND_RESET_HOLDING,
+    APP_BOND_RESET_REQUESTED,
+    APP_BOND_RESET_SUBMITTED,
+    APP_BOND_RESET_COMPLETED,
+    APP_BOND_RESET_FAILED,
+} app_bond_reset_state_t;
+
 typedef struct {
     app_event_type_t type;
     union {
         notification_t notification;
         app_connection_state_t connection;
+        bool bond_reset_succeeded;
     } data;
 } app_event_t;
 
@@ -48,10 +61,12 @@ typedef struct {
     bool notification_accepted;
     bool button_b_is_down;
     bool button_b_long_handled;
+    app_bond_reset_state_t bond_reset_state;
     bool bond_reset_progress_visible;
     uint8_t bond_reset_progress_percent;
     int64_t display_deadline_us;
     int64_t button_b_down_us;
+    int64_t bond_reset_feedback_deadline_us;
 } app_state_t;
 
 void app_state_init(app_state_t *state);

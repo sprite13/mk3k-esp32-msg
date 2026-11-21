@@ -23,6 +23,14 @@ typedef enum {
 } display_connection_t;
 
 typedef enum {
+    DISPLAY_BOND_RESET_NONE,
+    DISPLAY_BOND_RESET_HOLDING,
+    DISPLAY_BOND_RESET_REQUESTED,
+    DISPLAY_BOND_RESET_COMPLETED,
+    DISPLAY_BOND_RESET_FAILED,
+} display_bond_reset_state_t;
+
+typedef enum {
     DISPLAY_LINE_STATUS,
     DISPLAY_LINE_WARNING,
     DISPLAY_LINE_TITLE,
@@ -62,6 +70,6 @@ void display_layout_text(const char *text, size_t columns, size_t max_lines,
 void display_render_plan_make(display_connection_t connection, uint8_t battery_percent,
                               size_t position, size_t total,
                               const notification_t *notification,
-                              bool bond_reset_progress_visible,
+                              display_bond_reset_state_t bond_reset_state,
                               uint8_t bond_reset_progress_percent,
                               display_render_plan_t *plan);

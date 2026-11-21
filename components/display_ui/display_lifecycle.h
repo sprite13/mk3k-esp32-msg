@@ -23,7 +23,9 @@ void display_lifecycle_init(display_lifecycle_t *lifecycle);
 bool display_lifecycle_can_render(const display_lifecycle_t *lifecycle);
 bool display_lifecycle_can_sleep(const display_lifecycle_t *lifecycle);
 bool display_lifecycle_failed(const display_lifecycle_t *lifecycle);
+bool display_lifecycle_healthy(const display_lifecycle_t *lifecycle);
 void display_lifecycle_mark_awake(display_lifecycle_t *lifecycle);
+void display_lifecycle_mark_failed(display_lifecycle_t *lifecycle);
 void display_lifecycle_mark_transfer_timeout(display_lifecycle_t *lifecycle);
 void display_lifecycle_resolve_sleep(display_lifecycle_t *lifecycle,
                                      display_sleep_result_t result);

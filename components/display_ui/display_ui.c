@@ -76,6 +76,24 @@ static display_connection_t display_connection(ui_connection_state_t state)
     }
 }
 
+static display_bond_reset_state_t display_bond_reset_state(
+    ui_bond_reset_state_t state)
+{
+    switch (state) {
+    case UI_BOND_RESET_HOLDING:
+        return DISPLAY_BOND_RESET_HOLDING;
+    case UI_BOND_RESET_REQUESTED:
+        return DISPLAY_BOND_RESET_REQUESTED;
+    case UI_BOND_RESET_COMPLETED:
+        return DISPLAY_BOND_RESET_COMPLETED;
+    case UI_BOND_RESET_FAILED:
+        return DISPLAY_BOND_RESET_FAILED;
+    case UI_BOND_RESET_NONE:
+    default:
+        return DISPLAY_BOND_RESET_NONE;
+    }
+}
+
 static uint16_t line_color(display_line_style_t style, ui_connection_state_t state)
 {
     switch (style) {
@@ -261,6 +279,7 @@ void display_ui_render(const display_ui_model_t *model)
         }
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "failed to wake panel: %s", esp_err_to_name(err));
+            display_lifecycle_mark_failed(&s_lifecycle);
             xSemaphoreGive(s_operation_mutex);
             return;
         }
@@ -269,7 +288,8 @@ void display_ui_render(const display_ui_model_t *model)
 
     display_render_plan_make(display_connection(model->connection),
                              model->battery_percent, model->position, model->total,
-                             model->notification, model->bond_reset_progress_visible,
+                             model->notification,
+                             display_bond_reset_state(model->bond_reset_state),
                              model->bond_reset_progress_percent, &s_plan);
     esp_err_t err = fill_margin(0, DISPLAY_TOP_MARGIN);
     for (size_t row = 0U; err == ESP_OK && row < DISPLAY_LAYOUT_MAX_LINES; ++row) {
@@ -282,8 +302,20 @@ void display_ui_render(const display_ui_model_t *model)
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "render failed: %s", esp_err_to_name(err));
+        display_lifecycle_mark_failed(&s_lifecycle);
     }
     xSemaphoreGive(s_operation_mutex);
+}
+
+bool display_ui_is_healthy(void)
+{
+    if (!s_initialized || s_operation_mutex == NULL ||
+        xSemaphoreTake(s_operation_mutex, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    const bool healthy = display_lifecycle_healthy(&s_lifecycle);
+    xSemaphoreGive(s_operation_mutex);
+    return healthy;
 }
 
 static bool recover_awake_panel(void)

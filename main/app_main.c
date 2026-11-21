@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "ancs_client.h"
+#include "app_notification_admission.h"
 #include "app_state.h"
 #include "board.h"
 #include "display_ui.h"
@@ -29,8 +30,8 @@ static const char *const TAG = "app";
 static QueueHandle_t s_event_queue;
 static atomic_int s_pending_connection =
     ATOMIC_VAR_INIT(APP_NO_PENDING_CONNECTION);
-static atomic_uint s_dropped_notifications = ATOMIC_VAR_INIT(0U);
-static atomic_uint s_deferred_connections = ATOMIC_VAR_INIT(0U);
+static atomic_uint s_evicted_notifications = ATOMIC_VAR_INIT(0U);
+static atomic_uint s_admission_failures = ATOMIC_VAR_INIT(0U);
 
 static app_connection_state_t map_connection_state(ancs_client_state_t state)
 {
@@ -54,10 +55,28 @@ static void notification_callback(const notification_t *notification, void *ctx)
         return;
     }
 
+    const app_notification_admission_t admission =
+        app_notification_admission_decide(
+            notification, (size_t)uxQueueMessagesWaiting(s_event_queue),
+            APP_EVENT_QUEUE_CAPACITY);
+    if (admission == APP_NOTIFICATION_REJECT) {
+        return;
+    }
+
     app_event_t event = {.type = APP_EVENT_NOTIFICATION};
     event.data.notification = *notification;
+    if (xQueueSendToBack(s_event_queue, &event, 0U) == pdPASS) {
+        return;
+    }
+
+    /* ANCS is the sole producer; the app task can only free capacity here. */
+    app_event_t oldest;
+    if (xQueueReceive(s_event_queue, &oldest, 0U) == pdTRUE) {
+        (void)atomic_fetch_add_explicit(&s_evicted_notifications, 1U,
+                                        memory_order_relaxed);
+    }
     if (xQueueSendToBack(s_event_queue, &event, 0U) != pdPASS) {
-        (void)atomic_fetch_add_explicit(&s_dropped_notifications, 1U,
+        (void)atomic_fetch_add_explicit(&s_admission_failures, 1U,
                                         memory_order_relaxed);
     }
 }
@@ -66,18 +85,6 @@ static void publish_connection_state(app_connection_state_t state)
 {
     atomic_store_explicit(&s_pending_connection, (int)state,
                           memory_order_release);
-    if (s_event_queue == NULL) {
-        return;
-    }
-
-    const app_event_t event = {
-        .type = APP_EVENT_CONNECTION_STATE,
-        .data.connection = state,
-    };
-    if (xQueueSendToBack(s_event_queue, &event, 0U) != pdPASS) {
-        (void)atomic_fetch_add_explicit(&s_deferred_connections, 1U,
-                                        memory_order_relaxed);
-    }
 }
 
 static void state_callback(ancs_client_state_t state, void *ctx)
@@ -101,7 +108,25 @@ static ui_connection_state_t map_ui_connection(app_connection_state_t state)
     return UI_ERROR;
 }
 
-static void render_state(const app_state_t *state)
+static ui_bond_reset_state_t map_ui_bond_reset(app_bond_reset_state_t state)
+{
+    switch (state) {
+    case APP_BOND_RESET_HOLDING:
+        return UI_BOND_RESET_HOLDING;
+    case APP_BOND_RESET_REQUESTED:
+    case APP_BOND_RESET_SUBMITTED:
+        return UI_BOND_RESET_REQUESTED;
+    case APP_BOND_RESET_COMPLETED:
+        return UI_BOND_RESET_COMPLETED;
+    case APP_BOND_RESET_FAILED:
+        return UI_BOND_RESET_FAILED;
+    case APP_BOND_RESET_IDLE:
+    default:
+        return UI_BOND_RESET_NONE;
+    }
+}
+
+static bool render_state(const app_state_t *state)
 {
     const size_t total = notification_queue_size(&state->queue);
     const display_ui_model_t model = {
@@ -110,17 +135,20 @@ static void render_state(const app_state_t *state)
         .position = total == 0U ? 0U : state->queue.selected_offset + 1U,
         .total = total,
         .notification = notification_queue_current(&state->queue),
-        .bond_reset_progress_visible = state->bond_reset_progress_visible,
+        .bond_reset_state = map_ui_bond_reset(state->bond_reset_state),
         .bond_reset_progress_percent = state->bond_reset_progress_percent,
     };
     display_ui_render(&model);
-    board_backlight_set(true);
+    const bool healthy = display_ui_is_healthy();
+    board_backlight_set(healthy);
+    return healthy;
 }
 
 static bool event_should_render(const app_event_t *event,
                                 const app_state_t *state,
                                 bool forget_bond_requested,
-                                uint8_t previous_progress_percent)
+                                uint8_t previous_progress_percent,
+                                app_bond_reset_state_t previous_reset_state)
 {
     switch (event->type) {
     case APP_EVENT_NOTIFICATION:
@@ -129,14 +157,18 @@ static bool event_should_render(const app_event_t *event,
     case APP_EVENT_BUTTON_B_DOWN:
     case APP_EVENT_BUTTON_B_UP:
     case APP_EVENT_CONNECTION_STATE:
+    case APP_EVENT_BOND_RESET_RESULT:
         return true;
     case APP_EVENT_TIMER:
         return forget_bond_requested ||
+               previous_reset_state != state->bond_reset_state ||
                (state->bond_reset_progress_visible &&
                 previous_progress_percent /
                         APP_BOND_PROGRESS_RENDER_STEP_PERCENT !=
                     state->bond_reset_progress_percent /
                         APP_BOND_PROGRESS_RENDER_STEP_PERCENT);
+    case APP_EVENT_DISPLAY_FAILURE:
+        return false;
     }
     return false;
 }
@@ -147,6 +179,8 @@ static void apply_event(app_state_t *state, const app_event_t *event,
     const bool was_awake = state->display_awake;
     const uint8_t previous_progress_percent =
         state->bond_reset_progress_percent;
+    const app_bond_reset_state_t previous_reset_state =
+        state->bond_reset_state;
     app_state_reduce(state, event, now_us);
     const bool forget_bond_requested =
         app_state_take_forget_bond_request(state);
@@ -157,18 +191,27 @@ static void apply_event(app_state_t *state, const app_event_t *event,
     }
     if (state->display_awake &&
         event_should_render(event, state, forget_bond_requested,
-                            previous_progress_percent)) {
-        render_state(state);
+                            previous_progress_percent,
+                            previous_reset_state)) {
+        if (!render_state(state)) {
+            const app_event_t failed = {.type = APP_EVENT_DISPLAY_FAILURE};
+            app_state_reduce(state, &failed, now_us);
+        }
     }
     if (state->notification_accepted) {
         board_beep(APP_NOTIFICATION_BEEP_HZ, APP_NOTIFICATION_BEEP_MS);
     }
     if (forget_bond_requested) {
         const esp_err_t err = ancs_client_forget_bond();
+        const app_event_t result = {
+            .type = APP_EVENT_BOND_RESET_RESULT,
+            .data.bond_reset_succeeded = err == ESP_OK,
+        };
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "failed to request bond reset: %s",
                      esp_err_to_name(err));
         }
+        apply_event(state, &result, esp_timer_get_time());
     }
 }
 
@@ -189,27 +232,23 @@ static void apply_pending_connection(app_state_t *state)
 
 static void report_event_overflow(void)
 {
-    const unsigned int dropped = atomic_exchange_explicit(
-        &s_dropped_notifications, 0U, memory_order_relaxed);
-    const unsigned int deferred = atomic_exchange_explicit(
-        &s_deferred_connections, 0U, memory_order_relaxed);
-    if (dropped > 0U) {
-        ESP_LOGW(TAG, "event queue full: dropped %u notification event(s)",
-                 dropped);
-    }
-    if (deferred > 0U) {
+    const unsigned int evicted = atomic_exchange_explicit(
+        &s_evicted_notifications, 0U, memory_order_relaxed);
+    const unsigned int failures = atomic_exchange_explicit(
+        &s_admission_failures, 0U, memory_order_relaxed);
+    if (evicted > 0U) {
         ESP_LOGW(TAG,
-                 "event queue full: deferred %u connection update(s); latest preserved",
-                 deferred);
+                 "notification queue full: evicted %u oldest event(s); newest preserved",
+                 evicted);
+    }
+    if (failures > 0U) {
+        ESP_LOGE(TAG, "notification queue admission retry failed %u time(s)",
+                 failures);
     }
 }
 
 static void process_queued_event(app_state_t *state, const app_event_t *event)
 {
-    if (event->type == APP_EVENT_CONNECTION_STATE) {
-        apply_pending_connection(state);
-        return;
-    }
     apply_event(state, event, esp_timer_get_time());
 }
 

@@ -40,7 +40,7 @@ static const display_ui_model_t s_screens[] = {
      .position = 2U,
      .total = 5U,
      .notification = &s_direct,
-     .bond_reset_progress_visible = true,
+     .bond_reset_state = UI_BOND_RESET_HOLDING,
      .bond_reset_progress_percent = 50U},
 };
 
