@@ -1,0 +1,16 @@
+[
+  "_simulator_abi_version",
+  "_simulator_reset",
+  "_simulator_tick",
+  "_simulator_send_notification",
+  "_simulator_button_a",
+  "_simulator_button_b_down",
+  "_simulator_button_b_up",
+  "_simulator_set_connection",
+  "_simulator_set_battery",
+  "_simulator_set_previews_hidden",
+  "_simulator_take_beep",
+  "_simulator_snapshot",
+  "_malloc",
+  "_free"
+]

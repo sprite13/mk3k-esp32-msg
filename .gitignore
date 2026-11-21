@@ -2,3 +2,8 @@ build/
 build-light-sleep/
 sdkconfig
 sdkconfig.old
+/.emsdk/
+/.web-simulator-build/
+/simulator/web/artifacts/
+/simulator/web/dist/mk3k-simulator.mjs
+/simulator/web/dist/mk3k-simulator.wasm
