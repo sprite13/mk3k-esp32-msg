@@ -30,3 +30,16 @@ add_executable(test_board_logic
 target_include_directories(test_board_logic PRIVATE ${BOARD_DIR})
 project_apply_compile_policy(test_board_logic)
 add_test(NAME board_logic COMMAND test_board_logic)
+
+set(DISPLAY_DIR ${CMAKE_CURRENT_LIST_DIR}/../../components/display_ui)
+add_executable(test_display_layout
+    test_display_layout.c
+    ${DISPLAY_DIR}/display_layout.c
+    ${DISPLAY_DIR}/font_12x20_cyrillic.c
+)
+target_include_directories(test_display_layout PRIVATE
+    ${DISPLAY_DIR}
+    ${CORE_DIR}/include
+)
+project_apply_compile_policy(test_display_layout)
+add_test(NAME display_layout COMMAND test_display_layout)
