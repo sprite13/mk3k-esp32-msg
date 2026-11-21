@@ -86,15 +86,70 @@ fi
 mkdir -p "$artifact_root"
 staging="$(mktemp -d "$artifact_root/.mk3k-esp32-preview.XXXXXX")"
 backup=""
-cleanup() {
-    if [[ -n "$staging" && -d "$staging" ]]; then
-        find "$staging" -depth -delete
-    fi
-    if [[ -n "$backup" && -d "$backup" ]]; then
-        find "$backup" -depth -delete
-    fi
+new_package_installed=0
+cleanup_started=0
+
+remove_temporary_tree() {
+    local path="$1"
+    case "$path" in
+        "$artifact_root"/.mk3k-esp32-preview.*) ;;
+        *)
+            echo "error: refusing to clean unexpected temporary path: $path" >&2
+            return 1
+            ;;
+    esac
+    [[ ! -e "$path" && ! -L "$path" ]] || find "$path" -depth -delete
 }
+
+cleanup() {
+    local status=$? cleanup_status=0
+    [[ $cleanup_started -eq 0 ]] || exit "$status"
+    cleanup_started=1
+    trap - EXIT INT TERM HUP
+    set +e
+
+    if [[ -n "$backup" && -d "$backup" ]]; then
+        if [[ $new_package_installed -eq 0 ]]; then
+            if [[ ! -e "$default_package" && ! -L "$default_package" ]]; then
+                if mv -- "$backup" "$default_package"; then
+                    backup=""
+                else
+                    echo "error: could not restore the previous package: $backup" >&2
+                    cleanup_status=1
+                fi
+            else
+                echo "warning: preserving backup because package state is ambiguous: $backup" >&2
+            fi
+        # Narrow fault injection used only by the package transaction regression test.
+        elif [[ "${MK3K_PACKAGE_TEST_INTERRUPT_DURING_BACKUP_CLEANUP:-}" == "1" ]]; then
+            kill -TERM "$$"
+        elif ! remove_temporary_tree "$backup"; then
+            echo "warning: new package is valid, but old backup cleanup failed: $backup" >&2
+        else
+            backup=""
+        fi
+    fi
+    if [[ -n "$staging" ]] && ! remove_temporary_tree "$staging"; then
+        echo "warning: temporary package cleanup failed: $staging" >&2
+    fi
+    if [[ $cleanup_status -ne 0 ]]; then
+        status=$cleanup_status
+    fi
+    exit "$status"
+}
+
+on_signal() {
+    local status="$1"
+    trap - INT TERM HUP
+    exit "$status"
+}
+
+# EXIT covers normal completion, explicit errors, and set -e failures. Signal
+# handlers preserve the conventional status and then enter the same transaction.
 trap cleanup EXIT
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_signal 129' HUP
 
 for relative in "${runtime_files[@]}"; do
     source_file="$repo_root/simulator/web/$relative"
@@ -116,17 +171,14 @@ if [[ -e "$default_package" || -L "$default_package" ]]; then
     backup="$artifact_root/.mk3k-esp32-preview.previous.$$"
     [[ ! -e "$backup" ]] || die "temporary backup already exists: $backup"
     mv -- "$default_package" "$backup"
+    # Narrow fault injection used only by the package transaction regression test.
+    if [[ "${MK3K_PACKAGE_TEST_INTERRUPT_AFTER_BACKUP:-}" == "1" ]]; then
+        kill -TERM "$$"
+    fi
 fi
 if ! mv -- "$staging" "$default_package"; then
-    if [[ -n "$backup" && -d "$backup" ]]; then
-        mv -- "$backup" "$default_package"
-        backup=""
-    fi
     die "could not install packaged artifact"
 fi
+new_package_installed=1
 staging=""
-if [[ -n "$backup" ]]; then
-    find "$backup" -depth -delete
-    backup=""
-fi
 echo "packaged WebAssembly simulator: $default_package"

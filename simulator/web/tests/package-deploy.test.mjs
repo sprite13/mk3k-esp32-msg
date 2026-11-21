@@ -94,6 +94,64 @@ test('package validation rejects source maps, symlinks and absolute-root URLs', 
   }
 });
 
+test('interruption after old package rename restores it before cleaning temporary paths', () => {
+  const oldMarker = '<!-- preserved old package -->\n';
+  const canonicalManifest = readFileSync(join(artifact, 'SHA256SUMS'), 'utf8');
+  writeFileSync(join(artifact, 'index.html'), `${oldMarker}${readFileSync(join(artifact, 'index.html'), 'utf8')}`);
+  const runtimeFiles = filesBelow(artifact).filter((name) => name !== 'SHA256SUMS');
+  const manifest = spawnSync('sha256sum', runtimeFiles, { cwd: artifact, encoding: 'utf8' });
+  assert.equal(manifest.status, 0, manifest.stderr || manifest.stdout);
+  writeFileSync(join(artifact, 'SHA256SUMS'), manifest.stdout);
+  const oldCheck = run(packageScript, ['--check', artifact]);
+  assert.equal(oldCheck.status, 0, oldCheck.stderr || oldCheck.stdout);
+
+  const interrupted = run(packageScript, [], {
+    env: { MK3K_PACKAGE_TEST_INTERRUPT_AFTER_BACKUP: '1' },
+  });
+  assert.notEqual(interrupted.status, 0);
+  assert.match(readFileSync(join(artifact, 'index.html'), 'utf8'), /preserved old package/);
+  const restoredCheck = run(packageScript, ['--check', artifact]);
+  assert.equal(restoredCheck.status, 0, restoredCheck.stderr || restoredCheck.stdout);
+  const leftovers = readdirSync(join(root, 'artifacts'))
+    .filter((name) => name.startsWith('.mk3k-esp32-preview.'));
+  assert.deepEqual(leftovers, []);
+
+  const replaced = run(packageScript);
+  assert.equal(replaced.status, 0, replaced.stderr || replaced.stdout);
+  assert.doesNotMatch(readFileSync(join(artifact, 'index.html'), 'utf8'), /preserved old package/);
+  assert.equal(readFileSync(join(artifact, 'SHA256SUMS'), 'utf8'), canonicalManifest);
+  const replacementCheck = run(packageScript, ['--check', artifact]);
+  assert.equal(replacementCheck.status, 0, replacementCheck.stderr || replacementCheck.stdout);
+  const replacementLeftovers = readdirSync(join(root, 'artifacts'))
+    .filter((name) => name.startsWith('.mk3k-esp32-preview.'));
+  assert.deepEqual(replacementLeftovers, []);
+});
+
+test('interruption while deleting old backup never restores over installed package', () => {
+  const oldMarker = '<!-- old package must not return -->\n';
+  writeFileSync(join(artifact, 'index.html'), `${oldMarker}${readFileSync(join(artifact, 'index.html'), 'utf8')}`);
+  const runtimeFiles = filesBelow(artifact).filter((name) => name !== 'SHA256SUMS');
+  const manifest = spawnSync('sha256sum', runtimeFiles, { cwd: artifact, encoding: 'utf8' });
+  assert.equal(manifest.status, 0, manifest.stderr || manifest.stdout);
+  writeFileSync(join(artifact, 'SHA256SUMS'), manifest.stdout);
+
+  const interrupted = run(packageScript, [], {
+    env: { MK3K_PACKAGE_TEST_INTERRUPT_DURING_BACKUP_CLEANUP: '1' },
+  });
+  assert.notEqual(interrupted.status, 0);
+  assert.doesNotMatch(readFileSync(join(artifact, 'index.html'), 'utf8'), /old package must not return/);
+  const currentCheck = run(packageScript, ['--check', artifact]);
+  assert.equal(currentCheck.status, 0, currentCheck.stderr || currentCheck.stdout);
+
+  const backups = readdirSync(join(root, 'artifacts'))
+    .filter((name) => name.startsWith('.mk3k-esp32-preview.previous.'));
+  assert.equal(backups.length, 1);
+  assert.match(readFileSync(join(root, 'artifacts', backups[0], 'index.html'), 'utf8'), /old package must not return/);
+  const backupPath = join(root, 'artifacts', backups[0]);
+  makeTreeWritable(backupPath);
+  rmSync(backupPath, { recursive: true });
+});
+
 test('deploy and rollback atomically swap validated releases and restore on nginx failure', () => {
   const fixture = mkdtempSync(join(tmpdir(), 'mk3k-deploy-'));
   const bin = join(fixture, 'bin');
