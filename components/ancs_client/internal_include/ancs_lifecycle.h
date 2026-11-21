@@ -72,6 +72,7 @@ ancs_service_changed_decide(const uint8_t *data, size_t length,
 typedef enum {
     ANCS_BOND_RESET_IDLE,
     ANCS_BOND_RESET_WAIT_LINK_STOP,
+    ANCS_BOND_RESET_WAIT_CLEAR,
     ANCS_BOND_RESET_WAIT_RESTART,
 } ancs_bond_reset_state_t;
 
@@ -88,6 +89,12 @@ typedef enum {
     ANCS_BOND_ACTION_ADVERTISE,
 } ancs_bond_action_t;
 
+typedef enum {
+    ANCS_BOND_RESULT_NONE,
+    ANCS_BOND_RESULT_SUCCEEDED,
+    ANCS_BOND_RESULT_FAILED,
+} ancs_bond_result_t;
+
 void ancs_bond_reset_init(ancs_bond_reset_t *reset);
 ancs_bond_action_t ancs_bond_reset_request(ancs_bond_reset_t *reset,
                                            bool connected, bool advertising);
@@ -95,3 +102,5 @@ ancs_bond_action_t ancs_bond_reset_link_stopped(ancs_bond_reset_t *reset);
 ancs_bond_action_t ancs_bond_reset_cleared(ancs_bond_reset_t *reset,
                                            bool success);
 ancs_bond_action_t ancs_bond_reset_restart(ancs_bond_reset_t *reset);
+ancs_bond_result_t ancs_bond_reset_finish(ancs_bond_reset_t *reset,
+                                          bool success);

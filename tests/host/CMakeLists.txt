@@ -8,7 +8,7 @@ set(CORE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../components/notification_core)
 add_library(notification_core
     ${CORE_DIR}/notification_queue.c
     ${CORE_DIR}/notification_normalizer.c
-    ${CMAKE_CURRENT_LIST_DIR}/../../main/app_notification_admission.c
+    ${CMAKE_CURRENT_LIST_DIR}/../../main/app_notification_ring.c
     ${CMAKE_CURRENT_LIST_DIR}/../../main/app_state.c
 )
 target_include_directories(notification_core PUBLIC
@@ -32,12 +32,12 @@ target_link_libraries(test_app_state PRIVATE notification_core)
 project_apply_compile_policy(test_app_state)
 add_test(NAME app_state COMMAND test_app_state)
 
-add_executable(test_app_notification_admission
-    test_app_notification_admission.c
+add_executable(test_app_notification_ring
+    test_app_notification_ring.c
 )
-target_link_libraries(test_app_notification_admission PRIVATE notification_core)
-project_apply_compile_policy(test_app_notification_admission)
-add_test(NAME app_notification_admission COMMAND test_app_notification_admission)
+target_link_libraries(test_app_notification_ring PRIVATE notification_core)
+project_apply_compile_policy(test_app_notification_ring)
+add_test(NAME app_notification_ring COMMAND test_app_notification_ring)
 
 set(BOARD_DIR ${CMAKE_CURRENT_LIST_DIR}/../../components/board_m5stickc_plus2)
 add_executable(test_board_logic

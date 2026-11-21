@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "ancs_client.h"
-#include "app_notification_admission.h"
+#include "app_notification_ring.h"
 #include "app_state.h"
 #include "board.h"
 #include "display_ui.h"
@@ -11,8 +11,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
 #include "freertos/task.h"
+#include "notification_normalizer.h"
 #include "nvs_flash.h"
 
 enum {
@@ -24,14 +24,24 @@ enum {
     APP_NOTIFICATION_BEEP_MS = 50,
     APP_BOND_PROGRESS_RENDER_STEP_PERCENT = 10,
     APP_NO_PENDING_CONNECTION = -1,
+    APP_NO_PENDING_BOND_RESULT = -1,
 };
 
 static const char *const TAG = "app";
-static QueueHandle_t s_event_queue;
+static app_notification_ring_t s_notification_ring;
+static TaskHandle_t s_app_task;
 static atomic_int s_pending_connection =
     ATOMIC_VAR_INIT(APP_NO_PENDING_CONNECTION);
+static atomic_int s_pending_bond_result =
+    ATOMIC_VAR_INIT(APP_NO_PENDING_BOND_RESULT);
 static atomic_uint s_evicted_notifications = ATOMIC_VAR_INIT(0U);
-static atomic_uint s_admission_failures = ATOMIC_VAR_INIT(0U);
+
+static void wake_app_task(void)
+{
+    if (s_app_task != NULL) {
+        xTaskNotifyGive(s_app_task);
+    }
+}
 
 static app_connection_state_t map_connection_state(ancs_client_state_t state)
 {
@@ -51,46 +61,41 @@ static app_connection_state_t map_connection_state(ancs_client_state_t state)
 static void notification_callback(const notification_t *notification, void *ctx)
 {
     (void)ctx;
-    if (notification == NULL || s_event_queue == NULL) {
+    if (notification == NULL || !notification_is_telegram(notification)) {
         return;
     }
 
-    const app_notification_admission_t admission =
-        app_notification_admission_decide(
-            notification, (size_t)uxQueueMessagesWaiting(s_event_queue),
-            APP_EVENT_QUEUE_CAPACITY);
-    if (admission == APP_NOTIFICATION_REJECT) {
+    const app_notification_ring_result_t result =
+        app_notification_ring_push(&s_notification_ring, notification);
+    if (result == APP_NOTIFICATION_RING_REJECTED) {
         return;
     }
-
-    app_event_t event = {.type = APP_EVENT_NOTIFICATION};
-    event.data.notification = *notification;
-    if (xQueueSendToBack(s_event_queue, &event, 0U) == pdPASS) {
-        return;
-    }
-
-    /* ANCS is the sole producer; the app task can only free capacity here. */
-    app_event_t oldest;
-    if (xQueueReceive(s_event_queue, &oldest, 0U) == pdTRUE) {
+    if (result == APP_NOTIFICATION_RING_REPLACED_OLDEST) {
         (void)atomic_fetch_add_explicit(&s_evicted_notifications, 1U,
                                         memory_order_relaxed);
     }
-    if (xQueueSendToBack(s_event_queue, &event, 0U) != pdPASS) {
-        (void)atomic_fetch_add_explicit(&s_admission_failures, 1U,
-                                        memory_order_relaxed);
-    }
+    wake_app_task();
 }
 
 static void publish_connection_state(app_connection_state_t state)
 {
     atomic_store_explicit(&s_pending_connection, (int)state,
                           memory_order_release);
+    wake_app_task();
 }
 
 static void state_callback(ancs_client_state_t state, void *ctx)
 {
     (void)ctx;
     publish_connection_state(map_connection_state(state));
+}
+
+static void bond_reset_callback(ancs_bond_reset_result_t result, void *ctx)
+{
+    (void)ctx;
+    atomic_store_explicit(&s_pending_bond_result, (int)result,
+                          memory_order_release);
+    wake_app_task();
 }
 
 static ui_connection_state_t map_ui_connection(app_connection_state_t state)
@@ -203,16 +208,32 @@ static void apply_event(app_state_t *state, const app_event_t *event,
     }
     if (forget_bond_requested) {
         const esp_err_t err = ancs_client_forget_bond();
-        const app_event_t result = {
-            .type = APP_EVENT_BOND_RESET_RESULT,
-            .data.bond_reset_succeeded = err == ESP_OK,
-        };
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "failed to request bond reset: %s",
                      esp_err_to_name(err));
+            const app_event_t result = {
+                .type = APP_EVENT_BOND_RESET_RESULT,
+                .data.bond_reset_succeeded = false,
+            };
+            apply_event(state, &result, esp_timer_get_time());
         }
-        apply_event(state, &result, esp_timer_get_time());
     }
+}
+
+static void apply_pending_bond_result(app_state_t *state)
+{
+    const int pending = atomic_exchange_explicit(
+        &s_pending_bond_result, APP_NO_PENDING_BOND_RESULT,
+        memory_order_acq_rel);
+    if (pending == APP_NO_PENDING_BOND_RESULT) {
+        return;
+    }
+    const app_event_t event = {
+        .type = APP_EVENT_BOND_RESET_RESULT,
+        .data.bond_reset_succeeded =
+            pending == (int)ANCS_BOND_RESET_SUCCEEDED,
+    };
+    apply_event(state, &event, esp_timer_get_time());
 }
 
 static void apply_pending_connection(app_state_t *state)
@@ -234,22 +255,11 @@ static void report_event_overflow(void)
 {
     const unsigned int evicted = atomic_exchange_explicit(
         &s_evicted_notifications, 0U, memory_order_relaxed);
-    const unsigned int failures = atomic_exchange_explicit(
-        &s_admission_failures, 0U, memory_order_relaxed);
     if (evicted > 0U) {
         ESP_LOGW(TAG,
                  "notification queue full: evicted %u oldest event(s); newest preserved",
                  evicted);
     }
-    if (failures > 0U) {
-        ESP_LOGE(TAG, "notification queue admission retry failed %u time(s)",
-                 failures);
-    }
-}
-
-static void process_queued_event(app_state_t *state, const app_event_t *event)
-{
-    apply_event(state, event, esp_timer_get_time());
 }
 
 static void poll_buttons(app_state_t *state, board_buttons_t *previous)
@@ -280,20 +290,25 @@ static void app_task(void *arg)
     const TickType_t poll_ticks = pdMS_TO_TICKS(APP_BUTTON_POLL_MS);
 
     while (true) {
+        apply_pending_bond_result(&state);
         apply_pending_connection(&state);
         report_event_overflow();
 
-        app_event_t event;
-        if (xQueueReceive(s_event_queue, &event, poll_ticks) == pdTRUE) {
-            process_queued_event(&state, &event);
-            int drained = 1;
-            while (drained < APP_EVENT_QUEUE_CAPACITY &&
-                   xQueueReceive(s_event_queue, &event, 0U) == pdTRUE) {
-                process_queued_event(&state, &event);
-                ++drained;
-            }
+        (void)ulTaskNotifyTake(pdTRUE, poll_ticks);
+        notification_t notification;
+        int drained = 0;
+        while (drained < APP_EVENT_QUEUE_CAPACITY &&
+               app_notification_ring_pop(&s_notification_ring,
+                                         &notification)) {
+            const app_event_t event = {
+                .type = APP_EVENT_NOTIFICATION,
+                .data.notification = notification,
+            };
+            apply_event(&state, &event, esp_timer_get_time());
+            ++drained;
         }
 
+        apply_pending_bond_result(&state);
         apply_pending_connection(&state);
         poll_buttons(&state, &previous_buttons);
         const app_event_t timer_event = {.type = APP_EVENT_TIMER};
@@ -320,19 +335,18 @@ void app_main(void)
         return;
     }
 
-    s_event_queue = xQueueCreate(APP_EVENT_QUEUE_CAPACITY, sizeof(app_event_t));
-    if (s_event_queue == NULL) {
-        ESP_LOGE(TAG, "failed to create application event queue");
+    if (!app_notification_ring_init(&s_notification_ring,
+                                    APP_EVENT_QUEUE_CAPACITY)) {
+        ESP_LOGE(TAG, "failed to initialize notification ring");
         return;
     }
 
     const BaseType_t task_created =
         xTaskCreate(app_task, "app", APP_TASK_STACK_SIZE, NULL,
-                    APP_TASK_PRIORITY, NULL);
+                    APP_TASK_PRIORITY, &s_app_task);
     if (task_created != pdPASS) {
         ESP_LOGE(TAG, "failed to create application task");
-        vQueueDelete(s_event_queue);
-        s_event_queue = NULL;
+        s_app_task = NULL;
         return;
     }
 
@@ -340,6 +354,7 @@ void app_main(void)
         .on_notification = notification_callback,
         .on_state = state_callback,
         .ctx = NULL,
+        .on_bond_reset_result = bond_reset_callback,
     };
     const esp_err_t ancs_err = ancs_client_start(&ancs_config);
     if (ancs_err != ESP_OK) {

@@ -29,7 +29,8 @@ static void evaluate_deadlines(app_state_t *state, int64_t now_us)
         state->display_awake = false;
     }
 
-    if (state->bond_reset_state == APP_BOND_RESET_FAILED &&
+    if ((state->bond_reset_state == APP_BOND_RESET_COMPLETED ||
+         state->bond_reset_state == APP_BOND_RESET_FAILED) &&
         now_us >= state->bond_reset_feedback_deadline_us) {
         state->bond_reset_state = APP_BOND_RESET_IDLE;
         state->bond_reset_progress_visible = false;
@@ -143,7 +144,8 @@ void app_state_reduce(app_state_t *state, const app_event_t *event,
                                           APP_BOND_RESET_FAILED;
             state->bond_reset_progress_visible = true;
             if (event->data.bond_reset_succeeded) {
-                state->bond_reset_feedback_deadline_us = 0;
+                state->bond_reset_feedback_deadline_us =
+                    now_us + APP_BOND_RESET_FEEDBACK_US;
             } else {
                 state->bond_reset_progress_percent = 0U;
                 state->bond_reset_feedback_deadline_us =

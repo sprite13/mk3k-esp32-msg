@@ -247,6 +247,60 @@ static void test_reset_failure_is_bounded_and_can_be_requested_again(void)
     TEST_CHECK(!app_state_take_forget_bond_request(&state));
 }
 
+static void test_stale_and_duplicate_reset_results_are_ignored(void)
+{
+    app_state_t state;
+    app_state_init(&state);
+
+    reduce_reset_result(&state, true, 1U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_IDLE);
+
+    reduce_type(&state, APP_EVENT_BUTTON_B_DOWN, 10U);
+    reduce_type(&state, APP_EVENT_TIMER,
+                10U + APP_BUTTON_B_LONG_HOLD_US);
+    TEST_CHECK(app_state_take_forget_bond_request(&state));
+    reduce_reset_result(&state, true,
+                        10U + APP_BUTTON_B_LONG_HOLD_US + 1U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_COMPLETED);
+
+    reduce_reset_result(&state, false,
+                        10U + APP_BUTTON_B_LONG_HOLD_US + 2U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_COMPLETED);
+
+    const app_event_t pairing = {
+        .type = APP_EVENT_CONNECTION_STATE,
+        .data.connection = APP_CONNECTION_PAIRING,
+    };
+    app_state_reduce(&state, &pairing,
+                     10U + APP_BUTTON_B_LONG_HOLD_US + 3U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_IDLE);
+    reduce_reset_result(&state, true,
+                        10U + APP_BUTTON_B_LONG_HOLD_US + 4U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_IDLE);
+}
+
+static void test_reset_completion_has_bounded_pairing_fallback(void)
+{
+    app_state_t state;
+    app_state_init(&state);
+
+    reduce_type(&state, APP_EVENT_BUTTON_B_DOWN, 10U);
+    reduce_type(&state, APP_EVENT_TIMER,
+                10U + APP_BUTTON_B_LONG_HOLD_US);
+    TEST_CHECK(app_state_take_forget_bond_request(&state));
+    const int64_t completed_us = 10U + APP_BUTTON_B_LONG_HOLD_US + 1U;
+    reduce_reset_result(&state, true, completed_us);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_COMPLETED);
+
+    reduce_type(&state, APP_EVENT_TIMER,
+                completed_us + APP_BOND_RESET_FEEDBACK_US - 1U);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_COMPLETED);
+    reduce_type(&state, APP_EVENT_TIMER,
+                completed_us + APP_BOND_RESET_FEEDBACK_US);
+    TEST_CHECK(state.bond_reset_state == APP_BOND_RESET_IDLE);
+    TEST_CHECK(!state.bond_reset_progress_visible);
+}
+
 static void test_display_failure_clears_visible_assumption(void)
 {
     app_state_t state;
@@ -321,6 +375,8 @@ int main(void)
     test_early_b_release_resets_progress_and_navigates_once();
     test_reset_success_completes_only_after_result_until_pairing();
     test_reset_failure_is_bounded_and_can_be_requested_again();
+    test_stale_and_duplicate_reset_results_are_ignored();
+    test_reset_completion_has_bounded_pairing_fallback();
     test_display_failure_clears_visible_assumption();
     test_display_deadline_and_delayed_processing();
     test_connection_state();

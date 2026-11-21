@@ -121,12 +121,54 @@ static void test_bond_reset_queues_restart_after_link_stop(void)
                ANCS_BOND_ACTION_QUEUE_RESTART);
     TEST_CHECK(ancs_bond_reset_restart(&reset) ==
                ANCS_BOND_ACTION_ADVERTISE);
+    TEST_CHECK(ancs_bond_reset_finish(&reset, true) ==
+               ANCS_BOND_RESULT_SUCCEEDED);
+    TEST_CHECK(ancs_bond_reset_finish(&reset, false) ==
+               ANCS_BOND_RESULT_NONE);
 
     ancs_bond_reset_init(&reset);
     TEST_CHECK(ancs_bond_reset_request(&reset, false, true) ==
                ANCS_BOND_ACTION_STOP_ADVERTISING);
     TEST_CHECK(ancs_bond_reset_link_stopped(&reset) ==
                ANCS_BOND_ACTION_CLEAR_BONDS);
+}
+
+static void test_bond_reset_late_failure_reports_once(void)
+{
+    ancs_bond_reset_t reset;
+
+    ancs_bond_reset_init(&reset);
+    TEST_CHECK(ancs_bond_reset_request(&reset, true, false) ==
+               ANCS_BOND_ACTION_DISCONNECT);
+    TEST_CHECK(ancs_bond_reset_finish(&reset, false) ==
+               ANCS_BOND_RESULT_FAILED);
+    TEST_CHECK(ancs_bond_reset_finish(&reset, false) ==
+               ANCS_BOND_RESULT_NONE);
+
+    ancs_bond_reset_init(&reset);
+    TEST_CHECK(ancs_bond_reset_request(&reset, false, false) ==
+               ANCS_BOND_ACTION_CLEAR_BONDS);
+    TEST_CHECK(ancs_bond_reset_cleared(&reset, true) ==
+               ANCS_BOND_ACTION_QUEUE_RESTART);
+    TEST_CHECK(ancs_bond_reset_restart(&reset) ==
+               ANCS_BOND_ACTION_ADVERTISE);
+    TEST_CHECK(ancs_bond_reset_finish(&reset, false) ==
+               ANCS_BOND_RESULT_FAILED);
+    TEST_CHECK(ancs_bond_reset_finish(&reset, false) ==
+               ANCS_BOND_RESULT_NONE);
+}
+
+static void test_bond_reset_stale_transitions_do_not_report(void)
+{
+    ancs_bond_reset_t reset;
+
+    ancs_bond_reset_init(&reset);
+    TEST_CHECK(ancs_bond_reset_finish(&reset, true) ==
+               ANCS_BOND_RESULT_NONE);
+    TEST_CHECK(ancs_bond_reset_link_stopped(&reset) ==
+               ANCS_BOND_ACTION_NONE);
+    TEST_CHECK(ancs_bond_reset_restart(&reset) ==
+               ANCS_BOND_ACTION_NONE);
 }
 
 int main(void)
@@ -138,5 +180,7 @@ int main(void)
     test_backoff_resets_only_when_subscriptions_are_ready();
     test_service_changed_validation_and_decision();
     test_bond_reset_queues_restart_after_link_stop();
+    test_bond_reset_late_failure_reports_once();
+    test_bond_reset_stale_transitions_do_not_report();
     return 0;
 }

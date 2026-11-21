@@ -1,5 +1,6 @@
 #include "ancs_client.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -86,6 +87,7 @@ typedef struct {
     bool started;
     bool synced;
     bool state_valid;
+    atomic_bool bond_reset_pending;
 } ancs_client_context_t;
 
 static ancs_client_context_t s_client = {
@@ -120,6 +122,24 @@ static void emit_state(ancs_client_state_t state)
     s_client.state_valid = true;
     if (s_client.config.on_state != NULL) {
         s_client.config.on_state(state, s_client.config.ctx);
+    }
+}
+
+static void finish_bond_reset(bool success)
+{
+    const ancs_bond_result_t result =
+        ancs_bond_reset_finish(&s_client.bond_reset, success);
+    const bool was_pending = atomic_exchange_explicit(
+        &s_client.bond_reset_pending, false, memory_order_acq_rel);
+    if (!was_pending) {
+        return;
+    }
+
+    if (s_client.config.on_bond_reset_result != NULL) {
+        s_client.config.on_bond_reset_result(
+            result == ANCS_BOND_RESULT_SUCCEEDED ?
+                ANCS_BOND_RESET_SUCCEEDED : ANCS_BOND_RESET_FAILED,
+            s_client.config.ctx);
     }
 }
 
@@ -732,8 +752,12 @@ static void bond_restart_event(struct ble_npl_event *event)
     }
     const int rc = advertise();
     if (rc != 0) {
+        finish_bond_reset(false);
         fail_connection("pairing advertising start", rc);
+        return;
     }
+    finish_bond_reset(true);
+    emit_state(ANCS_CLIENT_PAIRING);
 }
 
 static void clear_bonds_and_queue_restart(void)
@@ -745,10 +769,10 @@ static void clear_bonds_and_queue_restart(void)
     const int rc = ble_store_clear();
     action = ancs_bond_reset_cleared(&s_client.bond_reset, rc == 0);
     if (rc != 0) {
+        finish_bond_reset(false);
         fail_connection("bond clear", rc);
         return;
     }
-    emit_state(ANCS_CLIENT_PAIRING);
     if (action == ANCS_BOND_ACTION_QUEUE_RESTART) {
         ble_npl_eventq_put(nimble_port_get_dflt_eventq(),
                            &s_client.bond_restart_event);
@@ -760,6 +784,10 @@ static void forget_event(struct ble_npl_event *event)
     ancs_bond_action_t action;
 
     (void)event;
+    if (!atomic_load_explicit(&s_client.bond_reset_pending,
+                              memory_order_acquire)) {
+        return;
+    }
     ble_npl_callout_stop(&s_client.reconnect);
     action = ancs_bond_reset_request(
         &s_client.bond_reset,
@@ -769,7 +797,7 @@ static void forget_event(struct ble_npl_event *event)
         const int rc = ble_gap_terminate(s_client.conn_handle,
                                          BLE_ERR_REM_USER_CONN_TERM);
         if (rc != 0) {
-            ancs_bond_reset_init(&s_client.bond_reset);
+            finish_bond_reset(false);
             fail_connection("disconnect for bond reset", rc);
         }
         return;
@@ -777,7 +805,7 @@ static void forget_event(struct ble_npl_event *event)
     if (action == ANCS_BOND_ACTION_STOP_ADVERTISING) {
         const int rc = ble_gap_adv_stop();
         if (rc != 0) {
-            ancs_bond_reset_init(&s_client.bond_reset);
+            finish_bond_reset(false);
             fail_connection("advertising stop for bond reset", rc);
         }
         return;
@@ -877,6 +905,7 @@ static void host_reset(int reason)
     s_client.conn_handle = BLE_HS_CONN_HANDLE_NONE;
     reset_requests();
     reset_discovery();
+    finish_bond_reset(false);
     emit_state(ANCS_CLIENT_ERROR);
 }
 
@@ -940,6 +969,7 @@ esp_err_t ancs_client_start(const ancs_client_config_t *config)
     s_client.conn_handle = BLE_HS_CONN_HANDLE_NONE;
     ancs_transport_init(&s_client.transport);
     ancs_bond_reset_init(&s_client.bond_reset);
+    atomic_init(&s_client.bond_reset_pending, false);
     ancs_parser_init(&s_client.parser, parser_notification, NULL);
     ble_hs_cfg.reset_cb = host_reset;
     ble_hs_cfg.sync_cb = host_sync;
@@ -976,8 +1006,11 @@ esp_err_t ancs_client_forget_bond(void)
     if (!s_client.started || !s_client.synced) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (ble_npl_event_is_queued(&s_client.forget_event)) {
-        return ESP_OK;
+    bool expected = false;
+    if (!atomic_compare_exchange_strong_explicit(
+            &s_client.bond_reset_pending, &expected, true,
+            memory_order_acq_rel, memory_order_acquire)) {
+        return ESP_ERR_INVALID_STATE;
     }
     ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &s_client.forget_event);
     return ESP_OK;

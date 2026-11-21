@@ -246,6 +246,10 @@ TEST_CASE("overflow backoff service changed and bond reset are bounded",
                       ancs_bond_reset_cleared(&reset, true));
     TEST_ASSERT_EQUAL(ANCS_BOND_ACTION_ADVERTISE,
                       ancs_bond_reset_restart(&reset));
+    TEST_ASSERT_EQUAL(ANCS_BOND_RESULT_SUCCEEDED,
+                      ancs_bond_reset_finish(&reset, true));
+    TEST_ASSERT_EQUAL(ANCS_BOND_RESULT_NONE,
+                      ancs_bond_reset_finish(&reset, false));
 }
 
 TEST_CASE("three second timeout cancels partial response", "[ancs_parser]")

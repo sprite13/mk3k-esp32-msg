@@ -196,6 +196,7 @@ ancs_bond_action_t ancs_bond_reset_request(ancs_bond_reset_t *reset,
         return connected ? ANCS_BOND_ACTION_DISCONNECT
                          : ANCS_BOND_ACTION_STOP_ADVERTISING;
     }
+    reset->state = ANCS_BOND_RESET_WAIT_CLEAR;
     return ANCS_BOND_ACTION_CLEAR_BONDS;
 }
 
@@ -204,14 +205,17 @@ ancs_bond_action_t ancs_bond_reset_link_stopped(ancs_bond_reset_t *reset)
     if (reset->state != ANCS_BOND_RESET_WAIT_LINK_STOP) {
         return ANCS_BOND_ACTION_NONE;
     }
+    reset->state = ANCS_BOND_RESET_WAIT_CLEAR;
     return ANCS_BOND_ACTION_CLEAR_BONDS;
 }
 
 ancs_bond_action_t ancs_bond_reset_cleared(ancs_bond_reset_t *reset,
                                            bool success)
 {
+    if (reset->state != ANCS_BOND_RESET_WAIT_CLEAR) {
+        return ANCS_BOND_ACTION_NONE;
+    }
     if (!success) {
-        reset->state = ANCS_BOND_RESET_IDLE;
         return ANCS_BOND_ACTION_NONE;
     }
     reset->state = ANCS_BOND_RESET_WAIT_RESTART;
@@ -223,6 +227,15 @@ ancs_bond_action_t ancs_bond_reset_restart(ancs_bond_reset_t *reset)
     if (reset->state != ANCS_BOND_RESET_WAIT_RESTART) {
         return ANCS_BOND_ACTION_NONE;
     }
-    reset->state = ANCS_BOND_RESET_IDLE;
     return ANCS_BOND_ACTION_ADVERTISE;
+}
+
+ancs_bond_result_t ancs_bond_reset_finish(ancs_bond_reset_t *reset,
+                                          bool success)
+{
+    if (reset == NULL || reset->state == ANCS_BOND_RESET_IDLE) {
+        return ANCS_BOND_RESULT_NONE;
+    }
+    reset->state = ANCS_BOND_RESET_IDLE;
+    return success ? ANCS_BOND_RESULT_SUCCEEDED : ANCS_BOND_RESULT_FAILED;
 }
