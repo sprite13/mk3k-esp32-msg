@@ -191,6 +191,7 @@ void ancs_parser_expect(ancs_parser_t *parser, uint32_t uid, uint32_t now_ms)
     parser->expected_uid = uid;
     parser->deadline_ms = now_ms + ANCS_PARSER_TIMEOUT_MS;
     parser_reset_response(parser);
+    parser->resync_expected_header = true;
     parser->pending = true;
 }
 

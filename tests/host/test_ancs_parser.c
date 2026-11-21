@@ -77,6 +77,29 @@ static void test_late_response_preserves_active_request(void)
     TEST_CHECK(capture.uid == 2U);
 }
 
+static void test_stale_attribute_tail_resynchronizes_to_active_uid(void)
+{
+    ancs_parser_t parser;
+    capture_t capture = {.parser = &parser};
+    uint8_t expected[96];
+    const size_t expected_length = make_response(expected, 22U);
+    const uint8_t stale_tail[] = {
+        'l', 'd', ' ', 'm', 'e', 's', 's', 'a', 'g', 'e',
+        3U, 4U, 0U, 't', 'a', 'i', 'l',
+    };
+
+    ancs_parser_init(&parser, capture_notification, &capture);
+    ancs_parser_expect(&parser, 22U, 0U);
+    ancs_parser_feed(&parser, stale_tail, 4U, 1U);
+    ancs_parser_feed(&parser, &stale_tail[4], sizeof(stale_tail) - 4U, 2U);
+    TEST_CHECK(ancs_parser_is_pending(&parser));
+    TEST_CHECK(capture.calls == 0U);
+    ancs_parser_feed(&parser, expected, 3U, 3U);
+    ancs_parser_feed(&parser, &expected[3], expected_length - 3U, 4U);
+    TEST_CHECK(capture.calls == 1U);
+    TEST_CHECK(capture.uid == 22U);
+}
+
 static void test_completion_ignores_trailing_bytes_after_reset(void)
 {
     ancs_parser_t parser;
@@ -118,6 +141,7 @@ static void test_queue_preserves_repeated_events_and_removes_all_uid(void)
 int main(void)
 {
     test_late_response_preserves_active_request();
+    test_stale_attribute_tail_resynchronizes_to_active_uid();
     test_completion_ignores_trailing_bytes_after_reset();
     test_queue_preserves_repeated_events_and_removes_all_uid();
     return 0;

@@ -6,8 +6,8 @@
 #include <inttypes.h>
 #include <string.h>
 
+#include "ancs_lifecycle.h"
 #include "ancs_parser.h"
-#include "ancs_request_queue.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "host/ble_gap.h"
@@ -24,8 +24,6 @@
 #include "services/gap/ble_svc_gap.h"
 
 #define ANCS_DEVICE_NAME "M5 ANCS"
-#define ANCS_RECONNECT_INITIAL_MS 1000U
-#define ANCS_RECONNECT_MAX_MS 30000U
 #define ANCS_NOTIFICATION_SOURCE_LENGTH 8U
 #define ANCS_EVENT_ADDED 0U
 #define ANCS_EVENT_MODIFIED 1U
@@ -75,27 +73,23 @@ typedef struct {
     struct ble_npl_callout parser_timeout;
     struct ble_npl_callout reconnect;
     struct ble_npl_event forget_event;
+    struct ble_npl_event bond_restart_event;
     discovery_handles_t gatt;
     discovery_handles_t ancs;
-    ancs_request_queue_t request_queue;
-    uint32_t active_uid;
-    uint32_t reconnect_delay_ms;
+    ancs_transport_t transport;
+    ancs_bond_reset_t bond_reset;
     uint16_t conn_handle;
     uint8_t own_addr_type;
     uint8_t descriptor_step;
     uint8_t subscription_step;
     ancs_client_state_t state;
-    bool active_uid_valid;
     bool started;
     bool synced;
-    bool forget_requested;
-    bool suppress_adv_complete;
     bool state_valid;
 } ancs_client_context_t;
 
 static ancs_client_context_t s_client = {
     .conn_handle = BLE_HS_CONN_HANDLE_NONE,
-    .reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS,
 };
 
 void ble_store_config_init(void);
@@ -131,12 +125,17 @@ static void emit_state(ancs_client_state_t state)
 
 static void reset_requests(void)
 {
+    const uint16_t conn_handle = s_client.conn_handle;
+    const uint32_t active_uid = ancs_transport_active_uid(&s_client.transport);
+
     ble_npl_callout_stop(&s_client.parser_timeout);
-    if (s_client.active_uid_valid) {
-        ancs_parser_cancel(&s_client.parser, s_client.active_uid);
+    if (ancs_transport_has_active(&s_client.transport)) {
+        ancs_parser_cancel(&s_client.parser, active_uid);
     }
-    s_client.active_uid_valid = false;
-    ancs_request_queue_init(&s_client.request_queue);
+    ancs_transport_disconnected(&s_client.transport);
+    if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        ancs_transport_connected(&s_client.transport, conn_handle);
+    }
 }
 
 static void reset_discovery(void)
@@ -175,24 +174,6 @@ static void fail_connection(const char *operation, int rc)
     }
 }
 
-static void queue_push(uint32_t uid)
-{
-    if (!ancs_request_queue_push(&s_client.request_queue, uid)) {
-        ESP_LOGW(TAG, "notification request queue full; dropping UID %" PRIu32,
-                 uid);
-    }
-}
-
-static bool queue_pop(uint32_t *uid)
-{
-    return ancs_request_queue_pop(&s_client.request_queue, uid);
-}
-
-static void queue_remove(uint32_t uid)
-{
-    (void)ancs_request_queue_remove(&s_client.request_queue, uid);
-}
-
 static void parser_notification(const notification_t *notification, void *ctx)
 {
     (void)ctx;
@@ -205,32 +186,51 @@ static int request_write_complete(uint16_t conn_handle,
                                   const struct ble_gatt_error *error,
                                   struct ble_gatt_attr *attr, void *arg)
 {
-    (void)conn_handle;
     (void)attr;
-    (void)arg;
-    if (error->status != 0) {
+    const uint32_t generation = (uint32_t)(uintptr_t)arg;
+    const ancs_write_result_t result = ancs_transport_write_complete(
+        &s_client.transport, conn_handle, generation, error->status == 0);
+
+    if (result == ANCS_WRITE_STALE) {
+        return 0;
+    }
+    if (result == ANCS_WRITE_ADVANCE) {
+        start_next_request();
+    } else if (result == ANCS_WRITE_ERROR) {
         fail_connection("ANCS control point write", error->status);
+    } else {
+        const uint32_t uid = ancs_transport_active_uid(&s_client.transport);
+
+        ancs_parser_expect(&s_client.parser, uid, now_ms());
+        const int rc = ble_npl_callout_reset(
+            &s_client.parser_timeout,
+            ble_npl_time_ms_to_ticks32(ANCS_PARSER_TIMEOUT_MS));
+        if (rc != 0) {
+            ancs_parser_cancel(&s_client.parser, uid);
+            (void)ancs_transport_cancel_active(&s_client.transport);
+            fail_connection("parser timeout scheduling", rc);
+        }
     }
     return 0;
 }
 
 static void start_next_request(void)
 {
-    uint32_t uid = 0U;
+    ancs_write_token_t token;
     uint8_t command[15];
     size_t offset = 0U;
     int rc;
 
-    if (s_client.active_uid_valid || s_client.conn_handle == BLE_HS_CONN_HANDLE_NONE ||
-        s_client.ancs.control_point_handle == 0U || !queue_pop(&uid)) {
+    if (s_client.ancs.control_point_handle == 0U ||
+        !ancs_transport_begin_write(&s_client.transport, &token)) {
         return;
     }
 
     command[offset++] = ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES;
-    command[offset++] = (uint8_t)(uid & 0xffU);
-    command[offset++] = (uint8_t)((uid >> 8U) & 0xffU);
-    command[offset++] = (uint8_t)((uid >> 16U) & 0xffU);
-    command[offset++] = (uint8_t)((uid >> 24U) & 0xffU);
+    command[offset++] = (uint8_t)(token.uid & 0xffU);
+    command[offset++] = (uint8_t)((token.uid >> 8U) & 0xffU);
+    command[offset++] = (uint8_t)((token.uid >> 16U) & 0xffU);
+    command[offset++] = (uint8_t)((token.uid >> 24U) & 0xffU);
     command[offset++] = ANCS_ATTRIBUTE_APP_IDENTIFIER;
     command[offset++] = ANCS_ATTRIBUTE_TITLE;
     command[offset++] = (uint8_t)((NOTIFICATION_TITLE_MAX - 1U) & 0xffU);
@@ -242,51 +242,45 @@ static void start_next_request(void)
     command[offset++] = (uint8_t)((NOTIFICATION_MESSAGE_MAX - 1U) & 0xffU);
     command[offset++] = (uint8_t)((NOTIFICATION_MESSAGE_MAX - 1U) >> 8U);
 
-    s_client.active_uid = uid;
-    s_client.active_uid_valid = true;
-    ancs_parser_expect(&s_client.parser, uid, now_ms());
-    rc = ble_npl_callout_reset(&s_client.parser_timeout,
-                               ble_npl_time_ms_to_ticks32(ANCS_PARSER_TIMEOUT_MS));
-    if (rc != 0) {
-        ancs_parser_cancel(&s_client.parser, uid);
-        s_client.active_uid_valid = false;
-        fail_connection("parser timeout scheduling", rc);
-        return;
-    }
-
-    rc = ble_gattc_write_flat(s_client.conn_handle,
+    rc = ble_gattc_write_flat(token.conn_handle,
                               s_client.ancs.control_point_handle,
                               command, (uint16_t)offset,
-                              request_write_complete, NULL);
+                              request_write_complete,
+                              (void *)(uintptr_t)token.generation);
     if (rc != 0) {
-        ble_npl_callout_stop(&s_client.parser_timeout);
-        ancs_parser_cancel(&s_client.parser, uid);
-        s_client.active_uid_valid = false;
+        (void)ancs_transport_write_complete(&s_client.transport,
+                                            token.conn_handle,
+                                            token.generation, false);
         fail_connection("ANCS control point write start", rc);
     }
 }
 
 static void abort_active_request_and_advance(void)
 {
-    if (!s_client.active_uid_valid) {
+    const uint32_t uid = ancs_transport_active_uid(&s_client.transport);
+
+    if (!ancs_transport_has_active(&s_client.transport)) {
         return;
     }
     ble_npl_callout_stop(&s_client.parser_timeout);
-    ancs_parser_cancel(&s_client.parser, s_client.active_uid);
-    s_client.active_uid_valid = false;
-    start_next_request();
+    ancs_parser_cancel(&s_client.parser, uid);
+    if (ancs_transport_cancel_active(&s_client.transport)) {
+        start_next_request();
+    }
 }
 
 static void parser_timeout_event(struct ble_npl_event *event)
 {
     (void)event;
-    if (!s_client.active_uid_valid) {
+    const uint32_t uid = ancs_transport_active_uid(&s_client.transport);
+
+    if (!ancs_transport_has_active(&s_client.transport)) {
         return;
     }
     ancs_parser_expire(&s_client.parser, now_ms());
     if (!ancs_parser_is_pending(&s_client.parser)) {
         ESP_LOGW(TAG, "attribute response timed out for UID %" PRIu32,
-                 s_client.active_uid);
+                 uid);
         abort_active_request_and_advance();
     }
 }
@@ -572,7 +566,7 @@ static int subscribe_write_complete(uint16_t conn_handle,
         s_client.subscription_step = 2U;
         write_subscription(s_client.ancs.data_source_cccd, false);
     } else {
-        s_client.reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
+        ancs_transport_subscriptions_ready(&s_client.transport);
         emit_state(ANCS_CLIENT_CONNECTED);
         start_next_request();
     }
@@ -590,13 +584,21 @@ static void handle_notification_source(const struct os_mbuf *om)
 
     const uint32_t uid = read_le32(&packet[4]);
     if (packet[0] == ANCS_EVENT_REMOVED) {
-        queue_remove(uid);
-        if (s_client.active_uid_valid && s_client.active_uid == uid) {
-            abort_active_request_and_advance();
+        if (ancs_transport_active_uid(&s_client.transport) == uid) {
+            ble_npl_callout_stop(&s_client.parser_timeout);
+            ancs_parser_cancel(&s_client.parser, uid);
+        }
+        if (ancs_transport_cancel_uid(&s_client.transport, uid)) {
+            start_next_request();
         }
     } else if (packet[0] == ANCS_EVENT_ADDED ||
                packet[0] == ANCS_EVENT_MODIFIED) {
-        queue_push(uid);
+        if (!ancs_transport_enqueue(&s_client.transport, uid)) {
+            ESP_LOGE(TAG, "notification request queue overflow at UID %" PRIu32,
+                     uid);
+            fail_connection("ANCS request queue overflow", BLE_HS_ENOMEM);
+            return;
+        }
         start_next_request();
     }
 }
@@ -613,7 +615,8 @@ static void handle_data_source(const struct os_mbuf *om)
         return;
     }
 
-    while (offset < length && s_client.active_uid_valid) {
+    while (offset < length &&
+           ancs_transport_response_waiting(&s_client.transport)) {
         const int remaining = length - offset;
         const int chunk = remaining < (int)sizeof(fragment) ? remaining :
                                                                     (int)sizeof(fragment);
@@ -628,8 +631,44 @@ static void handle_data_source(const struct os_mbuf *om)
             break;
         }
     }
-    if (s_client.active_uid_valid && !ancs_parser_is_pending(&s_client.parser)) {
-        abort_active_request_and_advance();
+    if (ancs_transport_response_waiting(&s_client.transport) &&
+        !ancs_parser_is_pending(&s_client.parser) &&
+        ancs_transport_finish_response(&s_client.transport)) {
+        ble_npl_callout_stop(&s_client.parser_timeout);
+        start_next_request();
+    }
+}
+
+static void handle_service_changed(const struct os_mbuf *om)
+{
+    uint8_t value[4];
+    ancs_handle_range_t range;
+    const int length = om == NULL ? 0 : OS_MBUF_PKTLEN(om);
+    ancs_service_changed_decision_t decision;
+
+    if (length != (int)sizeof(value) ||
+        os_mbuf_copydata(om, 0, sizeof(value), value) != 0) {
+        decision = ANCS_SERVICE_CHANGED_RECOVER;
+    } else {
+        decision = ancs_service_changed_decide(value, sizeof(value), &range);
+    }
+
+    reset_requests();
+    reset_discovery();
+    if (decision == ANCS_SERVICE_CHANGED_REDISCOVER) {
+        ESP_LOGI(TAG, "Service Changed handles 0x%04x-0x%04x; reconnecting",
+                 range.start_handle, range.end_handle);
+        emit_state(ANCS_CLIENT_RECONNECTING);
+    } else {
+        ESP_LOGE(TAG, "malformed Service Changed indication");
+        emit_state(ANCS_CLIENT_ERROR);
+    }
+    if (s_client.conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        const int rc = ble_gap_terminate(s_client.conn_handle,
+                                         BLE_ERR_REM_USER_CONN_TERM);
+        if (rc != 0) {
+            fail_connection("Service Changed recovery disconnect", rc);
+        }
     }
 }
 
@@ -661,18 +700,16 @@ static int advertise(void)
 
 static void schedule_reconnect(void)
 {
+    const uint32_t delay =
+        ancs_transport_take_reconnect_delay(&s_client.transport);
+
     emit_state(ANCS_CLIENT_RECONNECTING);
     const int rc = ble_npl_callout_reset(
         &s_client.reconnect,
-        ble_npl_time_ms_to_ticks32(s_client.reconnect_delay_ms));
+        ble_npl_time_ms_to_ticks32(delay));
     if (rc != 0) {
         fail_connection("reconnect scheduling", rc);
         return;
-    }
-    if (s_client.reconnect_delay_ms < ANCS_RECONNECT_MAX_MS) {
-        uint32_t next = s_client.reconnect_delay_ms * 2U;
-        s_client.reconnect_delay_ms = next > ANCS_RECONNECT_MAX_MS ?
-                                      ANCS_RECONNECT_MAX_MS : next;
     }
 }
 
@@ -686,46 +723,68 @@ static void reconnect_event(struct ble_npl_event *event)
     }
 }
 
-static void clear_bonds_and_pair(void)
+static void bond_restart_event(struct ble_npl_event *event)
 {
+    (void)event;
+    if (ancs_bond_reset_restart(&s_client.bond_reset) !=
+        ANCS_BOND_ACTION_ADVERTISE) {
+        return;
+    }
+    const int rc = advertise();
+    if (rc != 0) {
+        fail_connection("pairing advertising start", rc);
+    }
+}
+
+static void clear_bonds_and_queue_restart(void)
+{
+    ancs_bond_action_t action;
+
     reset_requests();
     reset_discovery();
     const int rc = ble_store_clear();
+    action = ancs_bond_reset_cleared(&s_client.bond_reset, rc == 0);
     if (rc != 0) {
         fail_connection("bond clear", rc);
-        s_client.forget_requested = false;
         return;
     }
-    s_client.forget_requested = false;
-    s_client.reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
     emit_state(ANCS_CLIENT_PAIRING);
-    const int adv_rc = advertise();
-    if (adv_rc != 0) {
-        fail_connection("pairing advertising start", adv_rc);
+    if (action == ANCS_BOND_ACTION_QUEUE_RESTART) {
+        ble_npl_eventq_put(nimble_port_get_dflt_eventq(),
+                           &s_client.bond_restart_event);
     }
 }
 
 static void forget_event(struct ble_npl_event *event)
 {
+    ancs_bond_action_t action;
+
     (void)event;
-    if (s_client.conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+    ble_npl_callout_stop(&s_client.reconnect);
+    action = ancs_bond_reset_request(
+        &s_client.bond_reset,
+        s_client.conn_handle != BLE_HS_CONN_HANDLE_NONE,
+        ble_gap_adv_active());
+    if (action == ANCS_BOND_ACTION_DISCONNECT) {
         const int rc = ble_gap_terminate(s_client.conn_handle,
                                          BLE_ERR_REM_USER_CONN_TERM);
         if (rc != 0) {
+            ancs_bond_reset_init(&s_client.bond_reset);
             fail_connection("disconnect for bond reset", rc);
         }
         return;
     }
-    if (ble_gap_adv_active()) {
-        s_client.suppress_adv_complete = true;
+    if (action == ANCS_BOND_ACTION_STOP_ADVERTISING) {
         const int rc = ble_gap_adv_stop();
         if (rc != 0) {
-            s_client.suppress_adv_complete = false;
+            ancs_bond_reset_init(&s_client.bond_reset);
             fail_connection("advertising stop for bond reset", rc);
-            return;
         }
+        return;
     }
-    clear_bonds_and_pair();
+    if (action == ANCS_BOND_ACTION_CLEAR_BONDS) {
+        clear_bonds_and_queue_restart();
+    }
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)
@@ -741,7 +800,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
         s_client.conn_handle = event->connect.conn_handle;
-        s_client.reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
+        ancs_transport_connected(&s_client.transport, s_client.conn_handle);
         rc = ble_gap_security_initiate(s_client.conn_handle);
         if (rc != 0) {
             fail_connection("security initiation", rc);
@@ -752,20 +811,21 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         s_client.conn_handle = BLE_HS_CONN_HANDLE_NONE;
         reset_requests();
         reset_discovery();
-        if (s_client.forget_requested) {
-            clear_bonds_and_pair();
+        if (ancs_bond_reset_link_stopped(&s_client.bond_reset) ==
+            ANCS_BOND_ACTION_CLEAR_BONDS) {
+            clear_bonds_and_queue_restart();
         } else {
             schedule_reconnect();
         }
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        if (s_client.suppress_adv_complete) {
-            s_client.suppress_adv_complete = false;
+        if (ancs_bond_reset_link_stopped(&s_client.bond_reset) ==
+            ANCS_BOND_ACTION_CLEAR_BONDS) {
+            clear_bonds_and_queue_restart();
             return 0;
         }
-        if (s_client.conn_handle == BLE_HS_CONN_HANDLE_NONE &&
-            !s_client.forget_requested) {
+        if (s_client.conn_handle == BLE_HS_CONN_HANDLE_NONE) {
             schedule_reconnect();
         }
         return 0;
@@ -787,8 +847,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             handle_data_source(event->notify_rx.om);
         } else if (event->notify_rx.attr_handle ==
                    s_client.gatt.service_changed_handle) {
-            emit_state(ANCS_CLIENT_RECONNECTING);
-            discover_ancs_service();
+            handle_service_changed(event->notify_rx.om);
         }
         return 0;
 
@@ -869,12 +928,6 @@ esp_err_t ancs_client_start(const ancs_client_config_t *config)
     }
 
     err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        err = nvs_flash_erase();
-        if (err == ESP_OK) {
-            err = nvs_flash_init();
-        }
-    }
     if (err != ESP_OK) {
         return err;
     }
@@ -885,7 +938,8 @@ esp_err_t ancs_client_start(const ancs_client_config_t *config)
 
     s_client.config = *config;
     s_client.conn_handle = BLE_HS_CONN_HANDLE_NONE;
-    s_client.reconnect_delay_ms = ANCS_RECONNECT_INITIAL_MS;
+    ancs_transport_init(&s_client.transport);
+    ancs_bond_reset_init(&s_client.bond_reset);
     ancs_parser_init(&s_client.parser, parser_notification, NULL);
     ble_hs_cfg.reset_cb = host_reset;
     ble_hs_cfg.sync_cb = host_sync;
@@ -911,6 +965,7 @@ esp_err_t ancs_client_start(const ancs_client_config_t *config)
     ble_npl_callout_init(&s_client.reconnect, nimble_port_get_dflt_eventq(),
                          reconnect_event, NULL);
     ble_npl_event_init(&s_client.forget_event, forget_event, NULL);
+    ble_npl_event_init(&s_client.bond_restart_event, bond_restart_event, NULL);
     s_client.started = true;
     nimble_port_freertos_init(host_task);
     return ESP_OK;
@@ -921,10 +976,9 @@ esp_err_t ancs_client_forget_bond(void)
     if (!s_client.started || !s_client.synced) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_client.forget_requested) {
+    if (ble_npl_event_is_queued(&s_client.forget_event)) {
         return ESP_OK;
     }
-    s_client.forget_requested = true;
     ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &s_client.forget_event);
     return ESP_OK;
 }

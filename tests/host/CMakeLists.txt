@@ -66,3 +66,14 @@ target_include_directories(test_ancs_parser PRIVATE
 )
 project_apply_compile_policy(test_ancs_parser)
 add_test(NAME ancs_parser COMMAND test_ancs_parser)
+
+add_executable(test_ancs_lifecycle
+    test_ancs_lifecycle.c
+    ${ANCS_DIR}/ancs_lifecycle.c
+    ${ANCS_DIR}/ancs_request_queue.c
+)
+target_include_directories(test_ancs_lifecycle PRIVATE
+    ${ANCS_DIR}/internal_include
+)
+project_apply_compile_policy(test_ancs_lifecycle)
+add_test(NAME ancs_lifecycle COMMAND test_ancs_lifecycle)

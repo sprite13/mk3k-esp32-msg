@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "ancs_client.h"
+#include "ancs_lifecycle.h"
 #include "ancs_parser.h"
 #include "ancs_request_queue.h"
 #include "unity.h"
@@ -134,6 +135,7 @@ TEST_CASE("malformed command and truncated response never emit", "[ancs_parser]"
     ancs_parser_init(&parser, capture_notification, &capture);
     ancs_parser_expect(&parser, 8U, 0U);
     ancs_parser_feed(&parser, malformed, sizeof(malformed), 1U);
+    ancs_parser_expire(&parser, ANCS_PARSER_TIMEOUT_MS);
     TEST_ASSERT_FALSE(ancs_parser_is_pending(&parser));
 
     ancs_parser_expect(&parser, 8U, 10U);
@@ -141,6 +143,109 @@ TEST_CASE("malformed command and truncated response never emit", "[ancs_parser]"
     ancs_parser_expire(&parser, 3011U);
     TEST_ASSERT_EQUAL_UINT(0U, capture.calls);
     TEST_ASSERT_FALSE(ancs_parser_is_pending(&parser));
+}
+
+TEST_CASE("control point cancellation waits for ATT completion", "[ancs_lifecycle]")
+{
+    ancs_transport_t transport;
+    ancs_write_token_t first;
+    ancs_write_token_t second;
+
+    ancs_transport_init(&transport);
+    ancs_transport_connected(&transport, 7U);
+    TEST_ASSERT_TRUE(ancs_transport_enqueue(&transport, 10U));
+    TEST_ASSERT_TRUE(ancs_transport_enqueue(&transport, 11U));
+    TEST_ASSERT_TRUE(ancs_transport_begin_write(&transport, &first));
+    TEST_ASSERT_FALSE(ancs_transport_cancel_uid(&transport, 10U));
+    TEST_ASSERT_FALSE(ancs_transport_begin_write(&transport, &second));
+    TEST_ASSERT_EQUAL(ANCS_WRITE_ADVANCE,
+                      ancs_transport_write_complete(
+                          &transport, first.conn_handle, first.generation, true));
+    TEST_ASSERT_TRUE(ancs_transport_begin_write(&transport, &second));
+    TEST_ASSERT_EQUAL_HEX32(11U, second.uid);
+}
+
+TEST_CASE("stale ATT callback cannot release current generation", "[ancs_lifecycle]")
+{
+    ancs_transport_t transport;
+    ancs_write_token_t old;
+    ancs_write_token_t current;
+
+    ancs_transport_init(&transport);
+    ancs_transport_connected(&transport, 4U);
+    TEST_ASSERT_TRUE(ancs_transport_enqueue(&transport, 20U));
+    TEST_ASSERT_TRUE(ancs_transport_begin_write(&transport, &old));
+    ancs_transport_disconnected(&transport);
+    ancs_transport_connected(&transport, 4U);
+    TEST_ASSERT_TRUE(ancs_transport_enqueue(&transport, 21U));
+    TEST_ASSERT_TRUE(ancs_transport_begin_write(&transport, &current));
+    TEST_ASSERT_EQUAL(ANCS_WRITE_STALE,
+                      ancs_transport_write_complete(
+                          &transport, old.conn_handle, old.generation, true));
+    TEST_ASSERT_TRUE(ancs_transport_write_in_flight(&transport));
+    TEST_ASSERT_EQUAL(ANCS_WRITE_START_TIMEOUT,
+                      ancs_transport_write_complete(
+                          &transport, current.conn_handle, current.generation,
+                          true));
+}
+
+TEST_CASE("timeout while ATT write is pending advances after callback",
+          "[ancs_lifecycle]")
+{
+    ancs_transport_t transport;
+    ancs_write_token_t token;
+
+    ancs_transport_init(&transport);
+    ancs_transport_connected(&transport, 5U);
+    TEST_ASSERT_TRUE(ancs_transport_enqueue(&transport, 30U));
+    TEST_ASSERT_TRUE(ancs_transport_begin_write(&transport, &token));
+    TEST_ASSERT_FALSE(ancs_transport_cancel_active(&transport));
+    TEST_ASSERT_EQUAL(ANCS_WRITE_ADVANCE,
+                      ancs_transport_write_complete(
+                          &transport, token.conn_handle, token.generation, true));
+    TEST_ASSERT_FALSE(ancs_transport_has_active(&transport));
+}
+
+TEST_CASE("overflow backoff service changed and bond reset are bounded",
+          "[ancs_lifecycle]")
+{
+    ancs_transport_t transport;
+    ancs_handle_range_t range;
+    ancs_bond_reset_t reset;
+    const uint8_t changed[] = {1U, 0U, 0xffU, 0xffU};
+
+    ancs_transport_init(&transport);
+    ancs_transport_connected(&transport, 1U);
+    for (uint32_t uid = 0U; uid < ANCS_REQUEST_QUEUE_CAPACITY; ++uid) {
+        TEST_ASSERT_TRUE(ancs_transport_enqueue(&transport, uid));
+    }
+    TEST_ASSERT_FALSE(ancs_transport_enqueue(&transport, 99U));
+    TEST_ASSERT_TRUE(ancs_transport_recovery_required(&transport));
+    TEST_ASSERT_EQUAL_UINT32(1000U,
+                             ancs_transport_take_reconnect_delay(&transport));
+    ancs_transport_connected(&transport, 2U);
+    TEST_ASSERT_EQUAL_UINT32(2000U,
+                             ancs_transport_take_reconnect_delay(&transport));
+    ancs_transport_subscriptions_ready(&transport);
+    TEST_ASSERT_EQUAL_UINT32(1000U,
+                             ancs_transport_take_reconnect_delay(&transport));
+    TEST_ASSERT_EQUAL(ANCS_SERVICE_CHANGED_REDISCOVER,
+                      ancs_service_changed_decide(changed, sizeof(changed),
+                                                  &range));
+    TEST_ASSERT_EQUAL_HEX16(1U, range.start_handle);
+    TEST_ASSERT_EQUAL_HEX16(UINT16_MAX, range.end_handle);
+    TEST_ASSERT_EQUAL(ANCS_SERVICE_CHANGED_RECOVER,
+                      ancs_service_changed_decide(changed, 3U, &range));
+
+    ancs_bond_reset_init(&reset);
+    TEST_ASSERT_EQUAL(ANCS_BOND_ACTION_STOP_ADVERTISING,
+                      ancs_bond_reset_request(&reset, false, true));
+    TEST_ASSERT_EQUAL(ANCS_BOND_ACTION_CLEAR_BONDS,
+                      ancs_bond_reset_link_stopped(&reset));
+    TEST_ASSERT_EQUAL(ANCS_BOND_ACTION_QUEUE_RESTART,
+                      ancs_bond_reset_cleared(&reset, true));
+    TEST_ASSERT_EQUAL(ANCS_BOND_ACTION_ADVERTISE,
+                      ancs_bond_reset_restart(&reset));
 }
 
 TEST_CASE("three second timeout cancels partial response", "[ancs_parser]")
@@ -229,6 +334,29 @@ TEST_CASE("late response after removed preserves replacement uid", "[ancs_parser
     ancs_parser_feed(&parser, expected, expected_length, 3U);
     TEST_ASSERT_EQUAL_UINT(1U, capture.calls);
     TEST_ASSERT_EQUAL_HEX32(42U, capture.notification.uid);
+}
+
+TEST_CASE("stale attribute tail resynchronizes to active uid", "[ancs_parser]")
+{
+    ancs_parser_t parser;
+    callback_capture_t capture = {0};
+    uint8_t expected[128];
+    const size_t expected_length = make_complete_response(expected, 43U);
+    const uint8_t stale_tail[] = {
+        'o', 'l', 'd', ' ', 'v', 'a', 'l', 'u', 'e',
+        3U, 4U, 0U, 't', 'a', 'i', 'l',
+    };
+
+    ancs_parser_init(&parser, capture_notification, &capture);
+    ancs_parser_expect(&parser, 43U, 0U);
+    ancs_parser_feed(&parser, stale_tail, 5U, 1U);
+    ancs_parser_feed(&parser, &stale_tail[5], sizeof(stale_tail) - 5U, 2U);
+    TEST_ASSERT_TRUE(ancs_parser_is_pending(&parser));
+    TEST_ASSERT_EQUAL_UINT(0U, capture.calls);
+    ancs_parser_feed(&parser, expected, 2U, 3U);
+    ancs_parser_feed(&parser, &expected[2], expected_length - 2U, 4U);
+    TEST_ASSERT_EQUAL_UINT(1U, capture.calls);
+    TEST_ASSERT_EQUAL_HEX32(43U, capture.notification.uid);
 }
 
 TEST_CASE("completion stops before trailing bytes after callback reset", "[ancs_parser]")
