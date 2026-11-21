@@ -56,7 +56,9 @@ test('responsive CSS has 44px targets and switches at 760px', async () => {
   assert.match(css, /@media\s*\(min-width:\s*760px\)/);
   assert.match(css, /:focus-visible/);
   assert.match(css, /\.device\s*\{[^}]*aspect-ratio:\s*458\s*\/\s*270/s);
-  assert.match(css, /\.device\s*\{[^}]*width:\s*calc\(100vw\s*-\s*2rem\)[^}]*max-width:\s*34rem/s);
+  assert.match(css, /\.device\s*\{[^}]*width:\s*min\(100%,\s*34rem\)[^}]*max-width:\s*100%/s);
+  assert.doesNotMatch(css, /\.device\s*\{[^}]*width:[^;}]*vw/s);
+  assert.match(css, /\.device-hint[^}]*overflow-wrap:\s*anywhere/s);
   assert.match(css, /#device-screen\s*\{[^}]*rotate\(-90deg\)/s);
   assert.doesNotMatch(css, /@import|https?:\/\//);
 });

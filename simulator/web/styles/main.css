@@ -50,8 +50,8 @@ button:hover { border-color: var(--teal); }
 .device-panel { display: grid; width: 100%; min-width: 0; justify-items: center; align-content: start; }
 .device {
   position: relative;
-  width: calc(100vw - 2rem);
-  max-width: 34rem;
+  width: min(100%, 34rem);
+  max-width: 100%;
   aspect-ratio: 458 / 270;
   filter: drop-shadow(0 1.5rem 2rem #0009);
 }
@@ -94,7 +94,14 @@ button:hover { border-color: var(--teal); }
 .device-button:active, .device-button.is-pressed { transform: translateY(2px); box-shadow: inset 0 2px 5px #0008; }
 .button-a { right: 2.5%; top: 40%; width: 10%; aspect-ratio: 1; }
 .button-b { left: 25%; bottom: -5%; width: 9%; aspect-ratio: 1; }
-.device-hint, .runtime-status { margin: .65rem 0 0; color: var(--muted); text-align: center; font-size: .9rem; }
+.device-hint, .runtime-status {
+  max-width: 100%;
+  margin: .65rem 0 0;
+  color: var(--muted);
+  text-align: center;
+  font-size: .9rem;
+  overflow-wrap: anywhere;
+}
 .runtime-status[data-error="true"] { color: #ff8f8f; }
 .retry-start { margin-top: .65rem; border-color: #ff8f8f; }
 .retry-start[hidden] { display: none; }
@@ -134,7 +141,6 @@ button:hover { border-color: var(--teal); }
 @media (min-width: 760px) {
   .simulator-shell { grid-template-columns: minmax(19rem, .9fr) minmax(23rem, 1.2fr); align-items: start; }
   .device-panel { position: sticky; top: 1rem; }
-  .device { width: 100%; }
   .controls-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .controls-panel .scenarios, .controls-panel .privacy-note { grid-column: 1 / -1; }
 }

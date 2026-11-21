@@ -5,7 +5,7 @@ import { readBatteryControl } from '../src/controls.mjs';
 import { createFrameScheduler } from '../src/frame-scheduler.mjs';
 import { createStartupController } from '../src/startup-controller.mjs';
 import { abortableDelay, createScenarioController } from '../src/scenario-controller.mjs';
-import { describeSnapshot } from '../src/accessibility.mjs';
+import { createLiveRegionUpdater, describeSnapshot } from '../src/accessibility.mjs';
 
 test('battery control covers 0, 42, 100 and explicit unknown', () => {
   const range = { value: '0' };
@@ -119,4 +119,17 @@ test('accessible model reports actual snapshot without inventing hidden content'
     total: 1, displayAwake: true, notificationPresent: true,
     notification: { title: '', message: '' } });
   assert.equal(hidden, 'Подключено. Заряд неизвестен. Уведомление 1 из 1. Экран включён. Содержимое скрыто.');
+});
+
+test('live region updater writes only when its derived description changes', () => {
+  const target = { writes: 0, value: '', set textContent(value) { this.writes += 1; this.value = value; } };
+  const update = createLiveRegionUpdater(target);
+  const base = { connection: 1, batteryPercent: 42, position: 0, total: 0,
+    displayAwake: false, notificationPresent: false,
+    notification: { title: '', message: '' } };
+  assert.equal(update(base), true);
+  assert.equal(update({ ...base }), false);
+  assert.equal(target.writes, 1);
+  assert.equal(update({ ...base, displayAwake: true }), true);
+  assert.equal(target.writes, 2);
 });

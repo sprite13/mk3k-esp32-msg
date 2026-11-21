@@ -1,5 +1,5 @@
 import { BeepAudio } from './audio.mjs';
-import { describeSnapshot } from './accessibility.mjs';
+import { createLiveRegionUpdater } from './accessibility.mjs';
 import { readBatteryControl, updateBatteryPresentation } from './controls.mjs';
 import { renderDeviceScreen } from './device-renderer.mjs';
 import { createFrameScheduler } from './frame-scheduler.mjs';
@@ -23,6 +23,7 @@ async function startRuntime(signal) {
   const audioEnabled = element('#audio-enabled');
   const status = element('#runtime-status');
   const screenReaderStatus = element('#screen-reader-status');
+  const updateLiveRegion = createLiveRegionUpdater(screenReaderStatus);
   const reset = element('#reset-simulator');
   const client = await loadWasmClient();
   if (signal.aborted) return;
@@ -54,7 +55,7 @@ async function startRuntime(signal) {
     if (client.takeBeep()) audio.play();
     const snapshot = client.snapshot();
     const plan = client.displayPlan();
-    screenReaderStatus.textContent = describeSnapshot(snapshot);
+    updateLiveRegion(snapshot);
     const signature = JSON.stringify([snapshot, plan]);
     if (signature !== lastFrame) {
       frames.schedule({ snapshot, plan });

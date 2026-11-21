@@ -16,3 +16,14 @@ export function describeSnapshot(snapshot) {
   }
   return parts.join(' ');
 }
+
+export function createLiveRegionUpdater(target) {
+  let previous = null;
+  return (snapshot) => {
+    const description = describeSnapshot(snapshot);
+    if (description === previous) return false;
+    target.textContent = description;
+    previous = description;
+    return true;
+  };
+}
