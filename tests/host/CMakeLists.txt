@@ -125,6 +125,16 @@ target_link_libraries(test_ancs_lifecycle PRIVATE power_manager_core)
 project_apply_compile_policy(test_ancs_lifecycle)
 add_test(NAME ancs_lifecycle COMMAND test_ancs_lifecycle)
 
+add_executable(test_ancs_advertising
+    test_ancs_advertising.c
+    ${ANCS_DIR}/ancs_advertising.c
+)
+target_include_directories(test_ancs_advertising PRIVATE
+    ${ANCS_DIR}/internal_include
+)
+project_apply_compile_policy(test_ancs_advertising)
+add_test(NAME ancs_advertising COMMAND test_ancs_advertising)
+
 add_executable(test_power_manager test_power_manager.c)
 target_link_libraries(test_power_manager PRIVATE power_manager_core)
 project_apply_compile_policy(test_power_manager)

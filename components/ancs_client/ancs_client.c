@@ -1,4 +1,5 @@
 #include "ancs_client.h"
+#include "ancs_advertising.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -696,6 +697,8 @@ static int advertise(void)
 {
     struct ble_hs_adv_fields fields = {0};
     struct ble_gap_adv_params params = {0};
+    const ancs_advertising_policy_t policy = ancs_advertising_policy();
+    ble_uuid16_t advertised_service = BLE_UUID16_INIT(0);
     const char *name = ble_svc_gap_device_name();
     int rc;
 
@@ -706,8 +709,18 @@ static int advertise(void)
     fields.name = (const uint8_t *)name;
     fields.name_len = (uint8_t)strlen(name);
     fields.name_is_complete = 1U;
-    fields.sol_uuids128 = &ANCS_SERVICE_UUID;
-    fields.sol_num_uuids128 = 1U;
+    if (policy.include_tx_power) {
+        fields.tx_pwr_lvl_is_present = 1U;
+        fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
+    }
+    advertised_service.value = policy.service_uuid16;
+    fields.uuids16 = &advertised_service;
+    fields.num_uuids16 = 1U;
+    fields.uuids16_is_complete = 1U;
+    if (policy.include_ancs_solicitation) {
+        fields.sol_uuids128 = &ANCS_SERVICE_UUID;
+        fields.sol_num_uuids128 = 1U;
+    }
     rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
         return rc;
