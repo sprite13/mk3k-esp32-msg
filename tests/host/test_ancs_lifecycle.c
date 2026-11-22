@@ -117,6 +117,18 @@ static void test_service_changed_validation_and_decision(void)
                ANCS_SERVICE_CHANGED_RECOVER);
 }
 
+static void test_service_changed_cccd_rejection_falls_back_to_ancs(void)
+{
+    TEST_CHECK(ancs_subscription_decide(0U, 0x01f5U) ==
+               ANCS_SUBSCRIPTION_DISCOVER_ANCS);
+    TEST_CHECK(ancs_subscription_decide(0U, 0U) ==
+               ANCS_SUBSCRIPTION_DISCOVER_ANCS);
+    TEST_CHECK(ancs_subscription_decide(0U, 0x0105U) ==
+               ANCS_SUBSCRIPTION_FAIL);
+    TEST_CHECK(ancs_subscription_decide(1U, 0x01f5U) ==
+               ANCS_SUBSCRIPTION_FAIL);
+}
+
 static void test_bond_reset_queues_restart_after_link_stop(void)
 {
     ancs_bond_reset_t reset;
@@ -294,6 +306,7 @@ int main(void)
     test_queue_overflow_requires_recovery();
     test_backoff_resets_only_when_subscriptions_are_ready();
     test_service_changed_validation_and_decision();
+    test_service_changed_cccd_rejection_falls_back_to_ancs();
     test_bond_reset_queues_restart_after_link_stop();
     test_bond_reset_late_failure_reports_once();
     test_bond_reset_stale_transitions_do_not_report();

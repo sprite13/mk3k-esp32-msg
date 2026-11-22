@@ -577,13 +577,20 @@ static int subscribe_write_complete(uint16_t conn_handle,
     (void)conn_handle;
     (void)attr;
     (void)arg;
-    if (error->status != 0) {
+    const ancs_subscription_action_t action =
+        ancs_subscription_decide(s_client.subscription_step, error->status);
+    if (action == ANCS_SUBSCRIPTION_FAIL) {
         fail_connection("CCCD write", error->status);
         return 0;
     }
-    if (s_client.subscription_step == 0U) {
+    if (action == ANCS_SUBSCRIPTION_DISCOVER_ANCS) {
+        if (error->status != 0U) {
+            ESP_LOGW(TAG,
+                     "Service Changed CCCD rejected: rc=%u; continuing without it",
+                     error->status);
+        }
         discover_ancs_service();
-    } else if (s_client.subscription_step == 1U) {
+    } else if (action == ANCS_SUBSCRIPTION_SUBSCRIBE_DATA_SOURCE) {
         s_client.subscription_step = 2U;
         write_subscription(s_client.ancs.data_source_cccd, false);
     } else {

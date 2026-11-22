@@ -55,6 +55,16 @@ uint32_t ancs_transport_active_uid(const ancs_transport_t *transport);
 uint32_t ancs_transport_take_reconnect_delay(ancs_transport_t *transport);
 void ancs_transport_subscriptions_ready(ancs_transport_t *transport);
 
+typedef enum {
+    ANCS_SUBSCRIPTION_DISCOVER_ANCS,
+    ANCS_SUBSCRIPTION_SUBSCRIBE_DATA_SOURCE,
+    ANCS_SUBSCRIPTION_READY,
+    ANCS_SUBSCRIPTION_FAIL,
+} ancs_subscription_action_t;
+
+ancs_subscription_action_t ancs_subscription_decide(uint8_t step,
+                                                     uint16_t status);
+
 typedef struct {
     uint8_t type;
     uint8_t value[6];

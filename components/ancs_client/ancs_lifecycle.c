@@ -160,6 +160,28 @@ void ancs_transport_subscriptions_ready(ancs_transport_t *transport)
     transport->reconnect_failures = 0U;
 }
 
+ancs_subscription_action_t ancs_subscription_decide(uint8_t step,
+                                                     uint16_t status)
+{
+    /* iOS can reject the optional GATT Service Changed CCCD with its
+     * vendor-specific ATT error 0xf5.  The reference ESP-IDF ANCS example
+     * does not subscribe to Service Changed, so continue with ANCS discovery
+     * for this one compatibility case. */
+    if (step == 0U && (status == 0U || status == 0x01f5U)) {
+        return ANCS_SUBSCRIPTION_DISCOVER_ANCS;
+    }
+    if (status != 0U) {
+        return ANCS_SUBSCRIPTION_FAIL;
+    }
+    if (step == 1U) {
+        return ANCS_SUBSCRIPTION_SUBSCRIBE_DATA_SOURCE;
+    }
+    if (step == 2U) {
+        return ANCS_SUBSCRIPTION_READY;
+    }
+    return ANCS_SUBSCRIPTION_FAIL;
+}
+
 ancs_peer_admission_t
 ancs_peer_admission_decide(const ancs_peer_identity_t *bonded_peers,
                            size_t bonded_peer_count,
