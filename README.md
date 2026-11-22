@@ -37,7 +37,6 @@ git -C "$HOME/esp/esp-idf-v6.1.1" describe --tags --exact-match
 
 ```bash
 source "$HOME/esp/esp-idf-v6.1.1/export.sh"
-cd repos/m5stickc-telegram-ancs
 idf.py set-target esp32
 idf.py build
 idf.py -p /dev/ttyUSB0 flash monitor
@@ -116,7 +115,6 @@ sleep в `sdkconfig.defaults` выключен, поэтому базовый п
 
 ```bash
 source "$HOME/esp/esp-idf-v6.1.1/export.sh"
-cd repos/m5stickc-telegram-ancs
 idf.py -B build-light-sleep \
   -DSDKCONFIG="$PWD/build-light-sleep/sdkconfig" \
   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.light_sleep" \
