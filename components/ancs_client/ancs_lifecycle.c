@@ -36,11 +36,7 @@ void ancs_transport_disconnected(ancs_transport_t *transport)
 
 bool ancs_transport_enqueue(ancs_transport_t *transport, uint32_t uid)
 {
-    if (!ancs_request_queue_push(&transport->queue, uid)) {
-        transport->recovery_required = true;
-        return false;
-    }
-    return true;
+    return ancs_request_queue_push(&transport->queue, uid);
 }
 
 bool ancs_transport_begin_write(ancs_transport_t *transport,

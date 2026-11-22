@@ -65,17 +65,20 @@ static void test_stale_callback_cannot_release_current_generation(void)
     TEST_CHECK(ancs_transport_response_waiting(&transport));
 }
 
-static void test_queue_overflow_requires_recovery(void)
+static void test_queue_overflow_keeps_latest_without_reconnect(void)
 {
     ancs_transport_t transport;
+    ancs_write_token_t token;
 
     ancs_transport_init(&transport);
     ancs_transport_connected(&transport, 1U);
     for (uint32_t uid = 0U; uid < ANCS_REQUEST_QUEUE_CAPACITY; ++uid) {
         TEST_CHECK(ancs_transport_enqueue(&transport, uid));
     }
-    TEST_CHECK(!ancs_transport_enqueue(&transport, 99U));
-    TEST_CHECK(ancs_transport_recovery_required(&transport));
+    TEST_CHECK(ancs_transport_enqueue(&transport, 99U));
+    TEST_CHECK(!ancs_transport_recovery_required(&transport));
+    TEST_CHECK(ancs_transport_begin_write(&transport, &token));
+    TEST_CHECK(token.uid == 1U);
 }
 
 static void test_backoff_resets_only_when_subscriptions_are_ready(void)
@@ -303,7 +306,7 @@ int main(void)
     test_removed_while_write_pending_waits_for_callback();
     test_timeout_while_write_pending_waits_for_callback();
     test_stale_callback_cannot_release_current_generation();
-    test_queue_overflow_requires_recovery();
+    test_queue_overflow_keeps_latest_without_reconnect();
     test_backoff_resets_only_when_subscriptions_are_ready();
     test_service_changed_validation_and_decision();
     test_service_changed_cccd_rejection_falls_back_to_ancs();

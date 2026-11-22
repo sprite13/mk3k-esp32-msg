@@ -10,7 +10,9 @@ void ancs_request_queue_init(ancs_request_queue_t *queue)
 bool ancs_request_queue_push(ancs_request_queue_t *queue, uint32_t uid)
 {
     if (queue->count == ANCS_REQUEST_QUEUE_CAPACITY) {
-        return false;
+        queue->head =
+            (uint8_t)((queue->head + 1U) % ANCS_REQUEST_QUEUE_CAPACITY);
+        queue->count--;
     }
     const uint8_t slot = (uint8_t)((queue->head + queue->count) %
                                    ANCS_REQUEST_QUEUE_CAPACITY);

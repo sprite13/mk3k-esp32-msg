@@ -206,7 +206,7 @@ TEST_CASE("timeout while ATT write is pending advances after callback",
     TEST_ASSERT_FALSE(ancs_transport_has_active(&transport));
 }
 
-TEST_CASE("overflow backoff service changed and bond reset are bounded",
+TEST_CASE("latest burst backoff service changed and bond reset are bounded",
           "[ancs_lifecycle]")
 {
     ancs_transport_t transport;
@@ -219,8 +219,8 @@ TEST_CASE("overflow backoff service changed and bond reset are bounded",
     for (uint32_t uid = 0U; uid < ANCS_REQUEST_QUEUE_CAPACITY; ++uid) {
         TEST_ASSERT_TRUE(ancs_transport_enqueue(&transport, uid));
     }
-    TEST_ASSERT_FALSE(ancs_transport_enqueue(&transport, 99U));
-    TEST_ASSERT_TRUE(ancs_transport_recovery_required(&transport));
+    TEST_ASSERT_TRUE(ancs_transport_enqueue(&transport, 99U));
+    TEST_ASSERT_FALSE(ancs_transport_recovery_required(&transport));
     TEST_ASSERT_EQUAL_UINT32(1000U,
                              ancs_transport_take_reconnect_delay(&transport));
     ancs_transport_connected(&transport, 2U);
